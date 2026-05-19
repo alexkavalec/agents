@@ -146,7 +146,7 @@ class Polymarket:
 
     def get_all_events(self) -> "list[SimpleEvent]":
         events = []
-        res = httpx.get(self.gamma_events_endpoint)
+        res = httpx.get(self.gamma_events_endpoint, params={"active": "true", "closed": "false", "limit": 50, "order": "volume", "ascending": "false"})
         if res.status_code == 200:
             print(f"RAW API returned {len(res.json())} events")
             for event in res.json():
@@ -193,13 +193,27 @@ class Polymarket:
         print(f"Total tradeable events after filter: {len(tradeable)}")
         return tradeable
 
-    def get_sampling_simplified_markets(self) -> "list[SimpleEvent]":
+    def get_sampling_simplified_markets(self) -> list:
         markets = []
-        raw_sampling_simplified_markets = self.client.get_sampling_simplified_markets()
-        for raw_market in raw_sampling_simplified_markets["data"]:
-            token_one_id = raw_market["tokens"][0]["token_id"]
-            market = self.get_market(token_one_id)
-            markets.append(market)
+        try:
+            raw = self.client.get_sampling_simplified_markets()
+            data = raw.get("data", raw) if isinstance(raw, dict) else raw
+            for raw_market in data:
+                try:
+                    if isinstance(raw_market, dict):
+                        tokens = raw_market.get("tokens", [])
+                        if tokens:
+                            token_one_id = tokens[0].get("token_id", "")
+                            if token_one_id:
+                                market = self.get_market(token_one_id)
+                                if market:
+                                    markets.append(market)
+                    else:
+                        markets.append(raw_market)
+                except Exception as e:
+                    continue
+        except Exception as e:
+            print(f"Sampling markets error: {e}")
         return markets
 
     def get_orderbook(self, token_id: str) -> OrderBookSummary:
