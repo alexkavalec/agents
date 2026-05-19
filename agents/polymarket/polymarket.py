@@ -268,20 +268,19 @@ class Polymarket:
             "markets": ",".join([x["id"] for x in event["markets"]]),
         }
 
-    def filter_events_for_trading(
-        self, events: "list[SimpleEvent]"
-    ) -> "list[SimpleEvent]":
-        tradeable_events = []
-        for event in events:
-            if (
-                event.active
-                and not event.restricted
-                and not event.archived
-                and not event.closed
-            ):
-                tradeable_events.append(event)
-        return tradeable_events
-
+   def filter_events_for_trading(
+    self, events: "list[SimpleEvent]"
+) -> "list[SimpleEvent]":
+    tradeable_events = []
+    for event in events:
+        if (
+            event.active
+            and not event.archived
+            and not event.closed
+        ):
+            tradeable_events.append(event)
+    return tradeable_events
+    
     def get_all_tradeable_events(self) -> "list[SimpleEvent]":
         all_events = self.get_all_events()
         return self.filter_events_for_trading(all_events)
