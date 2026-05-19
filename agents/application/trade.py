@@ -26,10 +26,19 @@ class Trader:
 
     def is_market_liquid(self, market) -> bool:
         try:
-            token_id = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])[1]
-            self.polymarket.get_orderbook(token_id)
-            return True
-        except Exception:
+            token_ids = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])
+            if not isinstance(token_ids, list):
+                token_ids = [token_ids]
+            for token_id in token_ids:
+                try:
+                    ob = self.polymarket.get_orderbook(str(token_id))
+                    if ob:
+                        return True
+                except Exception:
+                    continue
+            return False
+        except Exception as e:
+            print(f"Liquidity check error: {e}")
             return False
 
     def one_best_trade(self) -> None:
@@ -51,18 +60,21 @@ class Trader:
                 print("No markets found, exiting.")
                 return
 
+            print("Checking liquidity on all markets...")
             liquid_markets = []
             for m in markets:
-                if self.is_market_liquid(m):
+                liquid = self.is_market_liquid(m)
+                question = m[0].dict()["metadata"].get("question", "unknown")[:50]
+                print(f"  {'LIQUID' if liquid else 'dry'}: {question}")
+                if liquid:
                     liquid_markets.append(m)
-                    print(f"Liquid: {m[0].dict()['metadata'].get('question', '')[:60]}")
                 if len(liquid_markets) >= 10:
                     break
 
             print(f"3b. FOUND {len(liquid_markets)} LIQUID MARKETS")
             if not liquid_markets:
-                print("No liquid markets found, exiting.")
-                return
+                print("No liquid markets found — trying all markets directly")
+                liquid_markets = markets[:5]
 
             filtered_markets = self.agent.filter_markets(liquid_markets)
             print(f"4. FILTERED {len(filtered_markets)} MARKETS")
