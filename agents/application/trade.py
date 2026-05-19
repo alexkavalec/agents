@@ -1,8 +1,6 @@
 from agents.application.executor import Executor as Agent
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
-from agents.utils.objects import SimpleMarket
-import ast
 import shutil
 
 
@@ -25,36 +23,21 @@ class Trader:
         except:
             pass
 
-    def get_sampling_markets(self):
-        try:
-            raw = self.polymarket.client.get_sampling_simplified_markets()
-            data = raw.get("data", raw) if isinstance(raw, dict) else raw
-            return data
-        except Exception as e:
-            print(f"Sampling markets error: {e}")
-            return []
-
-    def find_liquid_token(self, question, sampling_markets):
+    def get_liquid_token(self, question, sampling_markets):
         if not question or not sampling_markets:
             return None
         q_lower = question.lower()[:30]
         for sm in sampling_markets:
             try:
-                sm_q = ""
                 if isinstance(sm, dict):
                     sm_q = sm.get("question", "").lower()
                     tokens = sm.get("tokens", [])
-                elif hasattr(sm, "question"):
-                    sm_q = (sm.question or "").lower()
-                    tokens = sm.clob_token_ids if hasattr(sm, "clob_token_ids") else []
-                else:
-                    continue
-                if q_lower[:20] in sm_q or sm_q[:20] in q_lower:
-                    if isinstance(tokens, list) and tokens:
-                        t = tokens[1] if len(tokens) > 1 else tokens[0]
-                        tid = t.get("token_id", "") if isinstance(t, dict) else str(t)
-                        if tid and tid not in ("0", ""):
-                            return tid
+                    if q_lower[:20] in sm_q or sm_q[:20] in q_lower:
+                        if tokens:
+                            t = tokens[1] if len(tokens) > 1 else tokens[0]
+                            tid = t.get("token_id", "") if isinstance(t, dict) else str(t)
+                            if tid and tid not in ("0", ""):
+                                return tid
             except Exception:
                 continue
         return None
@@ -63,9 +46,15 @@ class Trader:
         try:
             self.pre_trade_logic()
 
+            # Get liquid sampling markets for token lookup
             print("Fetching liquid sampling markets...")
-            sampling_markets = self.get_sampling_markets()
-            print(f"1. FOUND {len(sampling_markets)} LIQUID SAMPLING MARKETS")
+            try:
+                raw = self.polymarket.client.get_sampling_simplified_markets()
+                sampling_data = raw.get("data", raw) if isinstance(raw, dict) else raw
+                print(f"1. FOUND {len(sampling_data)} LIQUID SAMPLING MARKETS")
+            except Exception as e:
+                print(f"Sampling error: {e}")
+                sampling_data = []
 
             events = self.polymarket.get_all_tradeable_events()
             print(f"2. FOUND {len(events)} EVENTS")
@@ -99,25 +88,28 @@ class Trader:
             print(f"Trade amount: {amount}")
 
             # Find liquid token from sampling markets
-            token_id = self.find_liquid_token(question, sampling_markets)
+            token_id = self.get_liquid_token(question, sampling_data)
+
+            trade_amount = max(float(amount) if amount else 0, 1.0)
 
             if token_id:
                 print(f"Found liquid token: {token_id[:20]}...")
-                from py_clob_client.clob_types import MarketOrderArgs, OrderType
-                from py_clob_client.order_builder.constants import BUY
+                from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
                 order_args = MarketOrderArgs(
                     token_id=token_id,
-                    amount=max(amount, 1.0),
-                    side=BUY,
+                    amount=trade_amount,
+                    side=Side.BUY,
+                    order_type=OrderType.FOK,
                 )
-                signed_order = self.polymarket.client.create_market_order(order_args)
-                print(f"Signed order created")
-                resp = self.polymarket.client.post_order(signed_order, orderType=OrderType.FOK)
+                resp = self.polymarket.client.create_and_post_market_order(
+                    order_args=order_args,
+                    options=PartialCreateOrderOptions(tick_size="0.01"),
+                    order_type=OrderType.FOK,
+                )
                 print(f"7. TRADED: {resp}")
             else:
-                print("No matching liquid token found in sampling markets")
-                print("Attempting direct execution...")
-                trade = self.polymarket.execute_market_order(market, max(amount, 1.0))
+                print("No matching liquid token, trying direct execution...")
+                trade = self.polymarket.execute_market_order(market, trade_amount)
                 print(f"7. TRADED: {trade}")
 
         except Exception as e:
