@@ -41,7 +41,7 @@ class Polymarket:
 
         self.chain_id = 137  # POLYGON
         self.private_key = os.getenv("POLYGON_WALLET_PRIVATE_KEY")
-        self.polygon_rpc = os.getenv("POLYGON_RPC_URL", "https://polygon-mainnet.g.alchemy.com/v2/demo")
+        self.polygon_rpc = "https://polygon-rpc.com"
         self.w3 = Web3(Web3.HTTPProvider(self.polygon_rpc))
 
         self.exchange_address = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e"
@@ -99,7 +99,7 @@ class Polymarket:
 
     def get_all_markets(self) -> "list[SimpleMarket]":
         markets = []
-        res = httpx.get(self.gamma_markets_endpoint, params={"active": "true", "closed": "false", "limit": 50, "order": "volume", "ascending": "false"})
+        res = httpx.get(self.gamma_markets_endpoint)
         if res.status_code == 200:
             for market in res.json():
                 try:
@@ -127,26 +127,26 @@ class Polymarket:
 
     def map_api_to_market(self, market, token_id: str = "") -> SimpleMarket:
         market = {
-            "id": int(market.get("id", 0)),
-            "question": market.get("question", ""),
-            "end": market.get("endDate", ""),
-            "description": market.get("description", ""),
-            "active": market.get("active", False),
-            "funded": market.get("funded", False),
-            "rewardsMinSize": float(market.get("rewardsMinSize", 0)),
-            "rewardsMaxSpread": float(market.get("rewardsMaxSpread", 0)),
-            "spread": float(market.get("spread", 0)),
-            "outcomes": str(market.get("outcomes", "[]")),
-            "outcome_prices": str(market.get("outcomePrices", "[]")),
-            "clob_token_ids": str(market.get("clobTokenIds", "[]")),
-         }
+            "id": int(market["id"]),
+            "question": market["question"],
+            "end": market["endDate"],
+            "description": market["description"],
+            "active": market["active"],
+            "funded": market["funded"],
+            "rewardsMinSize": float(market["rewardsMinSize"]),
+            "rewardsMaxSpread": float(market["rewardsMaxSpread"]),
+            "spread": float(market["spread"]),
+            "outcomes": str(market["outcomes"]),
+            "outcome_prices": str(market["outcomePrices"]),
+            "clob_token_ids": str(market["clobTokenIds"]),
+        }
         if token_id:
             market["clob_token_ids"] = token_id
         return market
 
     def get_all_events(self) -> "list[SimpleEvent]":
         events = []
-        res = httpx.get(self.gamma_events_endpoint, params={"active": "true", "closed": "false", "limit": 50, "order": "volume", "ascending": "false"})
+        res = httpx.get(self.gamma_events_endpoint)
         if res.status_code == 200:
             print(f"RAW API returned {len(res.json())} events")
             for event in res.json():
@@ -238,20 +238,14 @@ class Polymarket:
         )
 
     def execute_market_order(self, market, amount) -> str:
-    try:
         token_id = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])[1]
-    except Exception:
-        token_id = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])[0]
-    order_args = MarketOrderArgs(
-        token_id=token_id,
-        amount=amount,
-    )
-    signed_order = self.client.create_market_order(order_args)
-    print("Execute market order... signed_order ", signed_order)
-    resp = self.client.post_order(signed_order, orderType=OrderType.FOK)
-    print(resp)
-    print("Done!")
-    return resp
+        order_args = MarketOrderArgs(token_id=token_id, amount=amount)
+        signed_order = self.client.create_market_order(order_args)
+        print("Execute market order... signed_order ", signed_order)
+        resp = self.client.post_order(signed_order, orderType=OrderType.FOK)
+        print(resp)
+        print("Done!")
+        return resp
 
     def get_usdc_balance(self) -> float:
         balance_res = self.usdc.functions.balanceOf(
