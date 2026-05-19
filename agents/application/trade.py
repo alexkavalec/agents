@@ -1,7 +1,9 @@
 from agents.application.executor import Executor as Agent
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
+import ast
 import shutil
+
 
 class Trader:
     def __init__(self):
@@ -40,17 +42,19 @@ class Trader:
             filtered_markets = self.agent.filter_markets(markets)
             print(f"4. FILTERED {len(filtered_markets)} MARKETS")
             market = None
-for m in filtered_markets:
-    try:
-        token_id = ast.literal_eval(m[0].dict()["metadata"]["clob_token_ids"])[1]
-        self.polymarket.get_orderbook(token_id)
-        market = m
-        break
-    except Exception:
-        continue
-if market is None:
-    print("No liquid markets found, exiting.")
-    return
+            for m in filtered_markets:
+                try:
+                    token_id = ast.literal_eval(m[0].dict()["metadata"]["clob_token_ids"])[1]
+                    self.polymarket.get_orderbook(token_id)
+                    market = m
+                    print(f"Found liquid market: {m[0].dict()['metadata'].get('question', 'unknown')[:50]}")
+                    break
+                except Exception as e:
+                    print(f"Market not liquid, skipping: {e}")
+                    continue
+            if market is None:
+                print("No liquid markets found, exiting.")
+                return
             best_trade = self.agent.source_best_trade(market)
             print(f"5. CALCULATED TRADE {best_trade}")
             amount = self.agent.format_trade_prompt_for_execution(best_trade)
@@ -64,6 +68,7 @@ if market is None:
 
     def incentive_farm(self):
         pass
+
 
 if __name__ == "__main__":
     t = Trader()
