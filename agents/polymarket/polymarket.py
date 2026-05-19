@@ -247,8 +247,14 @@ class Polymarket:
         return tradeable_events
 
     def get_all_tradeable_events(self) -> "list[SimpleEvent]":
-        all_events = self.get_all_events()
-        return self.filter_events_for_trading(all_events)
+    all_events = self.get_all_events()
+    print(f"Total raw events: {len(all_events)}")
+    if all_events:
+        e = all_events[0]
+        print(f"Sample event - active:{e.active} closed:{e.closed} archived:{e.archived} restricted:{e.restricted}")
+    tradeable = self.filter_events_for_trading(all_events)
+    print(f"Tradeable events after filter: {len(tradeable)}")
+    return tradeable
 
     def get_sampling_simplified_markets(self) -> "list[SimpleEvent]":
         markets = []
