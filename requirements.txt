@@ -114,7 +114,7 @@ posthog==3.5.0
 pre-commit==3.8.0
 protobuf==4.25.4
 py_clob_client==0.20.0
-py_order_utils==0.4.0
+py_order_utils==0.3.2
 pyasn1==0.6.0
 pyasn1_modules==0.4.0
 pycryptodome==3.20.0
