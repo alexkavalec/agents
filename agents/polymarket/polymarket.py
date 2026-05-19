@@ -252,21 +252,21 @@ class Polymarket:
         )
 
     def execute_market_order(self, market, amount) -> str:
-    try:
-        token_id = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])[1]
-    except Exception:
-        token_id = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])[0]
-    order_args = MarketOrderArgs(
-        token_id=token_id,
-        amount=amount,
-        side=BUY,
-    )
-    signed_order = self.client.create_market_order(order_args)
-    print("Execute market order... signed_order ", signed_order)
-    resp = self.client.post_order(signed_order, orderType=OrderType.FOK)
-    print(resp)
-    print("Done!")
-    return resp
+        try:
+            token_id = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])[1]
+        except Exception:
+            token_id = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])[0]
+        order_args = MarketOrderArgs(
+            token_id=token_id,
+            amount=amount,
+            side=BUY,
+        )
+        signed_order = self.client.create_market_order(order_args)
+        print("Execute market order... signed_order ", signed_order)
+        resp = self.client.post_order(signed_order, orderType=OrderType.FOK)
+        print(resp)
+        print("Done!")
+        return resp
 
     def get_usdc_balance(self) -> float:
         balance_res = self.usdc.functions.balanceOf(
