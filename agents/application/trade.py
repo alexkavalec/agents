@@ -25,40 +25,33 @@ class Trader:
             pass
 
     def one_best_trade(self) -> None:
-        """
+    try:
+        self.pre_trade_logic()
+        events = self.polymarket.get_all_tradeable_events()
+        print(f"1. FOUND {len(events)} EVENTS")
+        if len(events) == 0:
+            print("No tradeable events found, exiting.")
+            return
+        filtered_events = self.agent.filter_events(events)
+        print(f"2. FILTERED EVENTS: {filtered_events}")
+        markets = self.agent.map_filtered_events_to_markets(
+            self.agent.filter_events_with_rag(events)
+        ) if filtered_events else []
+        if not markets:
+            print("No markets found, exiting.")
+            return
+        filtered_markets = self.agent.filter_markets(markets)
+        print(f"3. FILTERED {len(filtered_markets)} MARKETS")
+        market = filtered_markets[0]
+        best_trade = self.agent.source_best_trade(market)
+        print(f"4. CALCULATED TRADE {best_trade}")
+        amount = self.agent.format_trade_prompt_for_execution(best_trade)
+        trade = self.polymarket.execute_market_order(market, amount)
+        print(f"5. TRADED {trade}")
 
-        one_best_trade is a strategy that evaluates all events, markets, and orderbooks
-
-        leverages all available information sources accessible to the autonomous agent
-
-        then executes that trade without any human intervention
-
-        """
-        try:
-            self.pre_trade_logic()
-
-            events = self.polymarket.get_all_tradeable_events()
-            print(f"1. FOUND {len(events)} EVENTS")
-
-            filtered_events = self.agent.filter_events_with_rag(events)
-            print(f"2. FILTERED {len(filtered_events)} EVENTS")
-
-            markets = self.agent.map_filtered_events_to_markets(filtered_events)
-            print()
-            print(f"3. FOUND {len(markets)} MARKETS")
-
-            print()
-            filtered_markets = self.agent.filter_markets(markets)
-            print(f"4. FILTERED {len(filtered_markets)} MARKETS")
-
-            market = filtered_markets[0]
-            best_trade = self.agent.source_best_trade(market)
-            print(f"5. CALCULATED TRADE {best_trade}")
-
-            amount = self.agent.format_trade_prompt_for_execution(best_trade)
-            # Please refer to TOS before uncommenting: polymarket.com/tos
-            # trade = self.polymarket.execute_market_order(market, amount)
-            # print(f"6. TRADED {trade}")
+    
+    except Exception as e:
+        print(f"Error: {e}")
 
         except Exception as e:
             print(f"Error {e} \n \n Retrying")
