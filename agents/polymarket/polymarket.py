@@ -127,19 +127,19 @@ class Polymarket:
 
     def map_api_to_market(self, market, token_id: str = "") -> SimpleMarket:
         market = {
-            "id": int(market["id"]),
-            "question": market["question"],
-            "end": market["endDate"],
-            "description": market["description"],
-            "active": market["active"],
-            "funded": market["funded"],
-            "rewardsMinSize": float(market["rewardsMinSize"]),
-            "rewardsMaxSpread": float(market["rewardsMaxSpread"]),
-            "spread": float(market["spread"]),
-            "outcomes": str(market["outcomes"]),
-            "outcome_prices": str(market["outcomePrices"]),
-            "clob_token_ids": str(market["clobTokenIds"]),
-        }
+            "id": int(market.get("id", 0)),
+            "question": market.get("question", ""),
+            "end": market.get("endDate", ""),
+            "description": market.get("description", ""),
+            "active": market.get("active", False),
+            "funded": market.get("funded", False),
+            "rewardsMinSize": float(market.get("rewardsMinSize", 0)),
+            "rewardsMaxSpread": float(market.get("rewardsMaxSpread", 0)),
+            "spread": float(market.get("spread", 0)),
+            "outcomes": str(market.get("outcomes", "[]")),
+            "outcome_prices": str(market.get("outcomePrices", "[]")),
+            "clob_token_ids": str(market.get("clobTokenIds", "[]")),
+         }
         if token_id:
             market["clob_token_ids"] = token_id
         return market
