@@ -114,6 +114,7 @@ posthog==3.5.0
 pre-commit==3.8.0
 protobuf==4.25.4
 py-clob-client-v2==1.0.1
+# py_order_utils removed
 pyasn1==0.6.0
 pyasn1_modules==0.4.0
 pycryptodome==3.20.0
