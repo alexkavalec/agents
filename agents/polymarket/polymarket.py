@@ -75,7 +75,6 @@ class Polymarket:
         )
         self.credentials = self.client.create_or_derive_api_creds()
         self.client.set_api_creds(self.credentials)
-        # print(self.credentials)
 
     def _init_approvals(self, run: bool = False) -> None:
         if not run:
@@ -89,7 +88,6 @@ class Polymarket:
         usdc = self.usdc
         ctf = self.ctf
 
-        # CTF Exchange
         raw_usdc_approve_txn = usdc.functions.approve(
             "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E", int(MAX_INT, 0)
         ).build_transaction({"chainId": chain_id, "from": pub_key, "nonce": nonce})
@@ -99,11 +97,7 @@ class Polymarket:
         send_usdc_approve_tx = web3.eth.send_raw_transaction(
             signed_usdc_approve_tx.raw_transaction
         )
-        usdc_approve_tx_receipt = web3.eth.wait_for_transaction_receipt(
-            send_usdc_approve_tx, 600
-        )
-        print(usdc_approve_tx_receipt)
-
+        web3.eth.wait_for_transaction_receipt(send_usdc_approve_tx, 600)
         nonce = web3.eth.get_transaction_count(pub_key)
 
         raw_ctf_approval_txn = ctf.functions.setApprovalForAll(
@@ -115,14 +109,9 @@ class Polymarket:
         send_ctf_approval_tx = web3.eth.send_raw_transaction(
             signed_ctf_approval_tx.raw_transaction
         )
-        ctf_approval_tx_receipt = web3.eth.wait_for_transaction_receipt(
-            send_ctf_approval_tx, 600
-        )
-        print(ctf_approval_tx_receipt)
-
+        web3.eth.wait_for_transaction_receipt(send_ctf_approval_tx, 600)
         nonce = web3.eth.get_transaction_count(pub_key)
 
-        # Neg Risk CTF Exchange
         raw_usdc_approve_txn = usdc.functions.approve(
             "0xC5d563A36AE78145C45a50134d48A1215220f80a", int(MAX_INT, 0)
         ).build_transaction({"chainId": chain_id, "from": pub_key, "nonce": nonce})
@@ -132,11 +121,7 @@ class Polymarket:
         send_usdc_approve_tx = web3.eth.send_raw_transaction(
             signed_usdc_approve_tx.raw_transaction
         )
-        usdc_approve_tx_receipt = web3.eth.wait_for_transaction_receipt(
-            send_usdc_approve_tx, 600
-        )
-        print(usdc_approve_tx_receipt)
-
+        web3.eth.wait_for_transaction_receipt(send_usdc_approve_tx, 600)
         nonce = web3.eth.get_transaction_count(pub_key)
 
         raw_ctf_approval_txn = ctf.functions.setApprovalForAll(
@@ -148,14 +133,9 @@ class Polymarket:
         send_ctf_approval_tx = web3.eth.send_raw_transaction(
             signed_ctf_approval_tx.raw_transaction
         )
-        ctf_approval_tx_receipt = web3.eth.wait_for_transaction_receipt(
-            send_ctf_approval_tx, 600
-        )
-        print(ctf_approval_tx_receipt)
-
+        web3.eth.wait_for_transaction_receipt(send_ctf_approval_tx, 600)
         nonce = web3.eth.get_transaction_count(pub_key)
 
-        # Neg Risk Adapter
         raw_usdc_approve_txn = usdc.functions.approve(
             "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296", int(MAX_INT, 0)
         ).build_transaction({"chainId": chain_id, "from": pub_key, "nonce": nonce})
@@ -165,11 +145,7 @@ class Polymarket:
         send_usdc_approve_tx = web3.eth.send_raw_transaction(
             signed_usdc_approve_tx.raw_transaction
         )
-        usdc_approve_tx_receipt = web3.eth.wait_for_transaction_receipt(
-            send_usdc_approve_tx, 600
-        )
-        print(usdc_approve_tx_receipt)
-
+        web3.eth.wait_for_transaction_receipt(send_usdc_approve_tx, 600)
         nonce = web3.eth.get_transaction_count(pub_key)
 
         raw_ctf_approval_txn = ctf.functions.setApprovalForAll(
@@ -181,10 +157,7 @@ class Polymarket:
         send_ctf_approval_tx = web3.eth.send_raw_transaction(
             signed_ctf_approval_tx.raw_transaction
         )
-        ctf_approval_tx_receipt = web3.eth.wait_for_transaction_receipt(
-            send_ctf_approval_tx, 600
-        )
-        print(ctf_approval_tx_receipt)
+        web3.eth.wait_for_transaction_receipt(send_ctf_approval_tx, 600)
 
     def get_all_markets(self) -> "list[SimpleMarket]":
         markets = []
@@ -221,11 +194,9 @@ class Polymarket:
             "end": market["endDate"],
             "description": market["description"],
             "active": market["active"],
-            # "deployed": market["deployed"],
             "funded": market["funded"],
             "rewardsMinSize": float(market["rewardsMinSize"]),
             "rewardsMaxSpread": float(market["rewardsMaxSpread"]),
-            # "volume": float(market["volume"]),
             "spread": float(market["spread"]),
             "outcomes": str(market["outcomes"]),
             "outcome_prices": str(market["outcomePrices"]),
@@ -268,19 +239,13 @@ class Polymarket:
             "markets": ",".join([x["id"] for x in event["markets"]]),
         }
 
-   def filter_events_for_trading(
-    self, events: "list[SimpleEvent]"
-) -> "list[SimpleEvent]":
-    tradeable_events = []
-    for event in events:
-        if (
-            event.active
-            and not event.archived
-            and not event.closed
-        ):
-            tradeable_events.append(event)
-    return tradeable_events
-    
+    def filter_events_for_trading(self, events: "list[SimpleEvent]") -> "list[SimpleEvent]":
+        tradeable_events = []
+        for event in events:
+            if event.active and not event.archived and not event.closed:
+                tradeable_events.append(event)
+        return tradeable_events
+
     def get_all_tradeable_events(self) -> "list[SimpleEvent]":
         all_events = self.get_all_events()
         return self.filter_events_for_trading(all_events)
@@ -304,17 +269,9 @@ class Polymarket:
         account = self.w3.eth.account.from_key(str(self.private_key))
         return account.address
 
-    def build_order(
-        self,
-        market_token: str,
-        amount: float,
-        nonce: str = str(round(time.time())),  # for cancellations
-        side: str = "BUY",
-        expiration: str = "0",  # timestamp after which order expires
-    ):
+    def build_order(self, market_token: str, amount: float, nonce: str = str(round(time.time())), side: str = "BUY", expiration: str = "0"):
         signer = Signer(self.private_key)
         builder = OrderBuilder(self.exchange_address, self.chain_id, signer)
-
         buy = side == "BUY"
         side = 0 if buy else 1
         maker_amount = amount if buy else 0
@@ -339,10 +296,7 @@ class Polymarket:
 
     def execute_market_order(self, market, amount) -> str:
         token_id = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])[1]
-        order_args = MarketOrderArgs(
-            token_id=token_id,
-            amount=amount,
-        )
+        order_args = MarketOrderArgs(token_id=token_id, amount=amount)
         signed_order = self.client.create_market_order(order_args)
         print("Execute market order... signed_order ", signed_order)
         resp = self.client.post_order(signed_order, orderType=OrderType.FOK)
@@ -357,124 +311,7 @@ class Polymarket:
         return float(balance_res / 10e5)
 
 
-def test():
-    host = "https://clob.polymarket.com"
-    key = os.getenv("POLYGON_WALLET_PRIVATE_KEY")
-    print(key)
-    chain_id = POLYGON
-
-    # Create CLOB client and get/set API credentials
-    client = ClobClient(host, key=key, chain_id=chain_id)
-    client.set_api_creds(client.create_or_derive_api_creds())
-
-    creds = ApiCreds(
-        api_key=os.getenv("CLOB_API_KEY"),
-        api_secret=os.getenv("CLOB_SECRET"),
-        api_passphrase=os.getenv("CLOB_PASS_PHRASE"),
-    )
-    chain_id = AMOY
-    client = ClobClient(host, key=key, chain_id=chain_id, creds=creds)
-
-    print(client.get_markets())
-    print(client.get_simplified_markets())
-    print(client.get_sampling_markets())
-    print(client.get_sampling_simplified_markets())
-    print(client.get_market("condition_id"))
-
-    print("Done!")
-
-
-def gamma():
-    url = "https://gamma-com"
-    markets_url = url + "/markets"
-    res = httpx.get(markets_url)
-    code = res.status_code
-    if code == 200:
-        markets: list[SimpleMarket] = []
-        data = res.json()
-        for market in data:
-            try:
-                market_data = {
-                    "id": int(market["id"]),
-                    "question": market["question"],
-                    # "start": market['startDate'],
-                    "end": market["endDate"],
-                    "description": market["description"],
-                    "active": market["active"],
-                    "deployed": market["deployed"],
-                    "funded": market["funded"],
-                    # "orderMinSize": float(market['orderMinSize']) if market['orderMinSize'] else 0,
-                    # "orderPriceMinTickSize": float(market['orderPriceMinTickSize']),
-                    "rewardsMinSize": float(market["rewardsMinSize"]),
-                    "rewardsMaxSpread": float(market["rewardsMaxSpread"]),
-                    "volume": float(market["volume"]),
-                    "spread": float(market["spread"]),
-                    "outcome_a": str(market["outcomes"][0]),
-                    "outcome_b": str(market["outcomes"][1]),
-                    "outcome_a_price": str(market["outcomePrices"][0]),
-                    "outcome_b_price": str(market["outcomePrices"][1]),
-                }
-                markets.append(SimpleMarket(**market_data))
-            except Exception as err:
-                print(f"error {err} for market {id}")
-        pdb.set_trace()
-    else:
-        raise Exception()
-
-
-def main():
-    # auth()
-    # test()
-    # gamma()
-    print(Polymarket().get_all_events())
-
-
 if __name__ == "__main__":
     load_dotenv()
-
     p = Polymarket()
-
-    # k = p.get_api_key()
-    # m = p.get_sampling_simplified_markets()
-
-    # print(m)
-    # m = p.get_market('11015470973684177829729219287262166995141465048508201953575582100565462316088')
-
-    # t = m[0]['token_id']
-    # o = p.get_orderbook(t)
-    # pdb.set_trace()
-
-    """
-    
-    (Pdb) pprint(o)
-            OrderBookSummary(
-                market='0x26ee82bee2493a302d21283cb578f7e2fff2dd15743854f53034d12420863b55', 
-                asset_id='11015470973684177829729219287262166995141465048508201953575582100565462316088', 
-                bids=[OrderSummary(price='0.01', size='600005'), OrderSummary(price='0.02', size='200000'), ...
-                asks=[OrderSummary(price='0.99', size='100000'), OrderSummary(price='0.98', size='200000'), ...
-            )
-    
-    """
-
-    # https://polygon-rpc.com
-
-    test_market_token_id = (
-        "101669189743438912873361127612589311253202068943959811456820079057046819967115"
-    )
-    test_market_data = p.get_market(test_market_token_id)
-
-    # test_size = 0.0001
-    test_size = 1
-    test_side = BUY
-    test_price = float(ast.literal_eval(test_market_data["outcome_prices"])[0])
-
-    # order = p.execute_order(
-    #    test_price,
-    #    test_size,
-    #    test_side,
-    #    test_market_token_id,
-    # )
-
-    # order = p.execute_market_order(test_price, test_market_token_id)
-
-    balance = p.get_usdc_balance()
+    print(p.get_all_events())
