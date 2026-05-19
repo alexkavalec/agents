@@ -146,7 +146,7 @@ class Polymarket:
 
     def get_all_events(self) -> "list[SimpleEvent]":
         events = []
-        res = httpx.get(self.gamma_events_endpoint)
+        res = httpx.get(self.gamma_events_endpoint, params={"active": "true", "closed": "false", "limit": 20})
         if res.status_code == 200:
             print(f"RAW API returned {len(res.json())} events")
             for event in res.json():
