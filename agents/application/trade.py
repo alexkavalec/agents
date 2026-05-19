@@ -39,7 +39,18 @@ class Trader:
                 return
             filtered_markets = self.agent.filter_markets(markets)
             print(f"4. FILTERED {len(filtered_markets)} MARKETS")
-            market = filtered_markets[0]
+            market = None
+for m in filtered_markets:
+    try:
+        token_id = ast.literal_eval(m[0].dict()["metadata"]["clob_token_ids"])[1]
+        self.polymarket.get_orderbook(token_id)
+        market = m
+        break
+    except Exception:
+        continue
+if market is None:
+    print("No liquid markets found, exiting.")
+    return
             best_trade = self.agent.source_best_trade(market)
             print(f"5. CALCULATED TRADE {best_trade}")
             amount = self.agent.format_trade_prompt_for_execution(best_trade)
