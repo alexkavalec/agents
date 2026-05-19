@@ -24,22 +24,31 @@ class Trader:
         except:
             pass
 
-    def is_market_liquid(self, market) -> bool:
+    def get_token_ids(self, market) -> list:
         try:
-            token_ids = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])
-            if not isinstance(token_ids, list):
-                token_ids = [token_ids]
-            for token_id in token_ids:
-                try:
-                    ob = self.polymarket.get_orderbook(str(token_id))
-                    if ob:
-                        return True
-                except Exception:
-                    continue
-            return False
+            raw = market[0].dict()["metadata"]["clob_token_ids"]
+            parsed = ast.literal_eval(str(raw))
+            if isinstance(parsed, list):
+                ids = [str(t) for t in parsed if str(t) not in ("0", "", "None", "null")]
+            else:
+                ids = [str(parsed)] if str(parsed) not in ("0", "", "None", "null") else []
+            return ids
         except Exception as e:
-            print(f"Liquidity check error: {e}")
+            print(f"Token parse error: {e}")
+            return []
+
+    def is_market_liquid(self, market) -> bool:
+        token_ids = self.get_token_ids(market)
+        if not token_ids:
             return False
+        for token_id in token_ids:
+            try:
+                ob = self.polymarket.get_orderbook(token_id)
+                if ob:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def one_best_trade(self) -> None:
         try:
@@ -60,12 +69,16 @@ class Trader:
                 print("No markets found, exiting.")
                 return
 
-            print("Checking liquidity on all markets...")
+            print("Checking liquidity...")
             liquid_markets = []
             for m in markets:
-                liquid = self.is_market_liquid(m)
+                token_ids = self.get_token_ids(m)
                 question = m[0].dict()["metadata"].get("question", "unknown")[:50]
-                print(f"  {'LIQUID' if liquid else 'dry'}: {question}")
+                if not token_ids:
+                    print(f"  SKIP (no token): {question}")
+                    continue
+                liquid = self.is_market_liquid(m)
+                print(f"  {'LIQUID' if liquid else 'dry'} [{token_ids[0][:8]}...]: {question}")
                 if liquid:
                     liquid_markets.append(m)
                 if len(liquid_markets) >= 10:
@@ -73,8 +86,12 @@ class Trader:
 
             print(f"3b. FOUND {len(liquid_markets)} LIQUID MARKETS")
             if not liquid_markets:
-                print("No liquid markets found — trying all markets directly")
-                liquid_markets = markets[:5]
+                print("No liquid markets found, using first 5 as fallback")
+                liquid_markets = [m for m in markets[:10] if self.get_token_ids(m)][:5]
+
+            if not liquid_markets:
+                print("No valid markets at all, exiting.")
+                return
 
             filtered_markets = self.agent.filter_markets(liquid_markets)
             print(f"4. FILTERED {len(filtered_markets)} MARKETS")
