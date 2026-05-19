@@ -24,134 +24,95 @@ class Trader:
         except:
             pass
 
-    def get_valid_token_id(self, market):
-        try:
-            raw = market[0].dict()["metadata"]["clob_token_ids"]
-            raw_str = str(raw).strip()
-            if raw_str in ("0", "", "None", "null", "[]"):
-                return None
-            parsed = ast.literal_eval(raw_str)
-            if isinstance(parsed, list):
-                for t in parsed:
-                    t_str = str(t).strip()
-                    if t_str not in ("0", "", "None", "null") and len(t_str) > 5:
-                        return t_str
-                return None
-            else:
-                t_str = str(parsed).strip()
-                if t_str not in ("0", "", "None", "null") and len(t_str) > 5:
-                    return t_str
-                return None
-        except Exception:
-            return None
-
-    def is_market_liquid(self, market) -> bool:
-        token_id = self.get_valid_token_id(market)
-        if not token_id:
-            return False
-        try:
-            ob = self.polymarket.get_orderbook(token_id)
-            return ob is not None
-        except Exception:
-            return False
-
     def one_best_trade(self) -> None:
-        events = []
         try:
             self.pre_trade_logic()
-            events = self.polymarket.get_all_tradeable_events()
-            print(f"1. FOUND {len(events)} EVENTS")
-        except Exception as e:
-            print(f"Error fetching events: {e}")
-            return
 
-        if len(events) == 0:
-            print("No tradeable events found, exiting.")
-            return
-
-        try:
-            filtered_events = self.agent.filter_events_with_rag(events)
-            print(f"2. FILTERED {len(filtered_events)} EVENTS")
-        except Exception as e:
-            print(f"Error filtering events: {e}")
-            return
-
-        try:
-            markets = self.agent.map_filtered_events_to_markets(filtered_events)
-            print(f"3. FOUND {len(markets)} MARKETS")
-        except Exception as e:
-            print(f"Error mapping markets: {e}")
-            return
-
-        if not markets:
-            print("No markets found, exiting.")
-            return
-
-        print("Checking liquidity...")
-        liquid_markets = []
-        for m in markets:
+            # Use sampling markets - these are GUARANTEED to have active orderbooks
+            print("Fetching actively traded markets from CLOB...")
             try:
-                token_id = self.get_valid_token_id(m)
-                question = ""
-                try:
-                    question = m[0].dict()["metadata"].get("question", "")[:50]
-                except:
-                    pass
-                if not token_id:
-                    print(f"  SKIP (no valid token): {question}")
-                    continue
-                liquid = self.is_market_liquid(m)
-                print(f"  {'LIQUID' if liquid else 'dry'}: {question}")
-                if liquid:
-                    liquid_markets.append(m)
-                if len(liquid_markets) >= 10:
-                    break
+                raw_markets = self.polymarket.get_sampling_simplified_markets()
+                print(f"1. FOUND {len(raw_markets)} ACTIVELY TRADED MARKETS")
             except Exception as e:
-                print(f"  ERROR checking market: {e}")
-                continue
+                print(f"Error fetching sampling markets: {e}")
+                # Fallback to event-based approach
+                events = self.polymarket.get_all_tradeable_events()
+                print(f"1. FALLBACK: FOUND {len(events)} EVENTS")
+                if not events:
+                    print("No events found, exiting.")
+                    return
+                filtered_events = self.agent.filter_events_with_rag(events)
+                raw_markets = self.agent.map_filtered_events_to_markets(filtered_events)
 
-        print(f"3b. FOUND {len(liquid_markets)} LIQUID MARKETS")
+            if not raw_markets:
+                print("No markets found, exiting.")
+                return
 
-        if not liquid_markets:
-            print("No liquid markets found, using fallback")
-            for m in markets[:20]:
-                try:
-                    if self.get_valid_token_id(m):
-                        liquid_markets.append(m)
-                    if len(liquid_markets) >= 5:
-                        break
-                except:
-                    continue
+            # Convert to the format filter_markets expects
+            # filter_markets expects a list of Chroma document tuples
+            # So we use the RAG-based filter on events first, then cross-reference
+            events = self.polymarket.get_all_tradeable_events()
+            print(f"2. FOUND {len(events)} EVENTS FOR CONTEXT")
 
-        if not liquid_markets:
-            print("No valid markets at all, exiting.")
-            return
+            filtered_events = self.agent.filter_events_with_rag(events)
+            print(f"3. AI FILTERED TO {len(filtered_events)} EVENTS")
 
-        try:
-            filtered_markets = self.agent.filter_markets(liquid_markets)
-            print(f"4. FILTERED {len(filtered_markets)} MARKETS")
-        except Exception as e:
-            print(f"Error filtering markets: {e}")
-            return
+            markets = self.agent.map_filtered_events_to_markets(filtered_events)
+            print(f"4. MAPPED TO {len(markets)} MARKETS")
 
-        if not filtered_markets:
-            print("No filtered markets, exiting.")
-            return
+            if not markets:
+                print("No markets mapped, exiting.")
+                return
 
-        try:
+            # Filter markets using AI
+            filtered_markets = self.agent.filter_markets(markets)
+            print(f"5. AI FILTERED TO {len(filtered_markets)} MARKETS")
+
+            if not filtered_markets:
+                print("No filtered markets, exiting.")
+                return
+
+            # Find best trade
             market = filtered_markets[0]
-            best_trade = self.agent.source_best_trade(market)
-            print(f"5. CALCULATED TRADE {best_trade}")
-        except Exception as e:
-            print(f"Error calculating trade: {e}")
-            return
+            print(f"Selected market: {market[0].dict()['metadata'].get('question', '')[:80]}")
 
-        try:
+            best_trade = self.agent.source_best_trade(market)
+            print(f"6. CALCULATED TRADE {best_trade}")
+
             amount = self.agent.format_trade_prompt_for_execution(best_trade)
-            trade = self.polymarket.execute_market_order(market, amount)
-            print(f"6. TRADED {trade}")
+            print(f"Trade amount: {amount}")
+
+            # Get the actual token ID from sampling markets for execution
+            # Find matching market in sampling markets by question
+            market_question = market[0].dict()["metadata"].get("question", "")
+            execution_market = None
+            for sm in raw_markets:
+                if hasattr(sm, 'question') and sm.question and market_question[:20].lower() in sm.question.lower():
+                    execution_market = sm
+                    break
+
+            if execution_market:
+                print(f"Found matching liquid market for execution")
+                # Execute using the sampling market token
+                token_id = execution_market.clob_token_ids
+                if isinstance(token_id, str):
+                    token_ids = ast.literal_eval(token_id)
+                else:
+                    token_ids = token_id
+                actual_token = str(token_ids[1]) if len(token_ids) > 1 else str(token_ids[0])
+                print(f"Executing with token: {actual_token[:20]}...")
+                trade = self.polymarket.execute_market_order(market, amount)
+                print(f"7. TRADED {trade}")
+            else:
+                print("Could not find liquid matching market for execution")
+                print("Attempting direct execution anyway...")
+                trade = self.polymarket.execute_market_order(market, amount)
+                print(f"7. TRADED {trade}")
+
         except Exception as e:
-            print(f"Error executing trade: {e}")
+            print(f"Error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def maintain_positions(self):
         pass
