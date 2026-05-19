@@ -123,6 +123,21 @@ def run_autonomous_trader() -> None:
     trader = Trader()
     trader.one_best_trade()
 
-
+@app.command()
+def run_loop(interval_minutes: int = 30) -> None:
+    """
+    Run autonomous trader in a continuous loop
+    """
+    import time
+    while True:
+        print("Starting trade cycle...")
+        try:
+            trader = Trader()
+            trader.one_best_trade()
+            print(f"Trade cycle complete. Sleeping {interval_minutes} minutes...")
+        except Exception as e:
+            print(f"Error in trade cycle: {e}")
+        time.sleep(interval_minutes * 60)
+        
 if __name__ == "__main__":
     app()
