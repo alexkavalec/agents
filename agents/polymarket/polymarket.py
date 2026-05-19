@@ -56,23 +56,23 @@ class Polymarket:
         self._init_api_keys()
 
     def _init_api_keys(self) -> None:
-        funder = os.getenv("POLYGON_FUNDER_ADDRESS")
-        l1_client = ClobClient(
-            host=self.clob_url,
-            chain_id=self.chain_id,
-            key=self.private_key,
-            signature_type=1,
-            funder=funder,
-        )
-        creds = l1_client.create_or_derive_api_key()
-        self.client = ClobClient(
-            host=self.clob_url,
-            chain_id=self.chain_id,
-            key=self.private_key,
-            creds=creds,
-            signature_type=1,
-            funder=funder,
-        )
+    funder = os.getenv("POLYGON_FUNDER_ADDRESS")
+    l1_client = ClobClient(
+        host=self.clob_url,
+        chain_id=self.chain_id,
+        key=self.private_key,
+        signature_type=1,
+        funder=funder,
+    )
+    creds = l1_client.create_or_derive_api_key()
+    self.client = ClobClient(
+        host=self.clob_url,
+        chain_id=self.chain_id,
+        key=self.private_key,
+        creds=creds,
+        signature_type=1,
+        funder=funder,
+    )
 
     def get_all_markets(self) -> "list[SimpleMarket]":
         markets = []
