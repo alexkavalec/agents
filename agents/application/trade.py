@@ -2,6 +2,23 @@ from agents.application.executor import Executor as Agent
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
 import shutil
+import os
+import json
+import re
+import datetime
+
+# =========================================================================
+# GUARDRAILS CONFIG  -- tune these. All money limits are FRACTIONS of balance.
+# =========================================================================
+MIN_EDGE = 0.10            # require >=10 percentage-point gap between the bot's
+                           # estimated probability and the market price, or skip.
+MAX_TRADE_FRACTION = 0.10  # never stake more than 10% of current balance on one trade
+MAX_OPEN_POSITIONS = 5     # don't open a new position if this many are already open
+DAILY_SPEND_FRACTION = 0.30  # stop opening trades once 30% of starting daily balance spent
+DAILY_LOSS_FRACTION = 0.15   # stop for the day if balance drops 15% below the day's start
+ABSOLUTE_MIN_TRADE = 1.0   # Polymarket order minimum (~$1). Below this, skip.
+STATE_FILE = "/tmp/trader_daily_state.json"
+# =========================================================================
 
 
 class Trader:
@@ -10,18 +27,37 @@ class Trader:
         self.gamma = Gamma()
         self.agent = Agent()
 
+    def _today(self) -> str:
+        return datetime.date.today().isoformat()
+
+    def _load_state(self, current_balance: float) -> dict:
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+            if state.get("date") == self._today():
+                return state
+        except Exception:
+            pass
+        state = {"date": self._today(), "start_balance": current_balance, "spent": 0.0}
+        self._save_state(state)
+        return state
+
+    def _save_state(self, state: dict) -> None:
+        try:
+            with open(STATE_FILE, "w") as f:
+                json.dump(state, f)
+        except Exception as e:
+            print(f"WARN: could not save daily state: {e}")
+
     def pre_trade_logic(self) -> None:
         self.clear_local_dbs()
 
     def clear_local_dbs(self) -> None:
-        try:
-            shutil.rmtree("local_db_events")
-        except:
-            pass
-        try:
-            shutil.rmtree("local_db_markets")
-        except:
-            pass
+        for d in ("local_db_events", "local_db_markets"):
+            try:
+                shutil.rmtree(d)
+            except Exception:
+                pass
 
     def get_liquid_token(self, question, sampling_markets):
         if not question or not sampling_markets:
@@ -42,11 +78,66 @@ class Trader:
                 continue
         return None
 
+    def _parse_prob_and_price(self, best_trade, market):
+        prob = price = None
+        try:
+            text = str(best_trade)
+            m = re.search(r"price\s*[:=]\s*([0-9]*\.?[0-9]+)", text)
+            if m:
+                prob = float(m.group(1))
+        except Exception:
+            pass
+        try:
+            meta = market[0].dict().get("metadata", {})
+            tid = meta.get("clobTokenIds") or meta.get("token_id")
+            if isinstance(tid, str) and tid:
+                price = self.polymarket.get_orderbook_price(tid)
+        except Exception:
+            pass
+        return prob, price
+
+    def _count_open_positions(self) -> int:
+        try:
+            if hasattr(self.polymarket, "get_open_positions"):
+                return len(self.polymarket.get_open_positions())
+        except Exception:
+            pass
+        return -1
+
     def one_best_trade(self) -> None:
         try:
             self.pre_trade_logic()
 
-            # Get liquid sampling markets for token lookup
+            try:
+                balance = float(self.polymarket.get_usdc_balance())
+            except Exception as e:
+                print(f"Could not read balance ({e}); aborting this run for safety.")
+                return
+            print(f"Balance: ${balance:.2f}")
+
+            state = self._load_state(balance)
+            start_bal = state["start_balance"]
+            spent_today = state["spent"]
+
+            loss_floor = start_bal * (1 - DAILY_LOSS_FRACTION)
+            if balance <= loss_floor:
+                print(f"DAILY LOSS LIMIT hit (balance ${balance:.2f} <= floor ${loss_floor:.2f}). Stopping for the day.")
+                return
+
+            spend_cap = start_bal * DAILY_SPEND_FRACTION
+            if spent_today >= spend_cap:
+                print(f"DAILY SPEND CAP hit (spent ${spent_today:.2f} >= cap ${spend_cap:.2f}). Stopping for the day.")
+                return
+
+            open_count = self._count_open_positions()
+            if open_count >= 0:
+                print(f"Open positions: {open_count}")
+                if open_count >= MAX_OPEN_POSITIONS:
+                    print(f"MAX OPEN POSITIONS reached ({open_count}/{MAX_OPEN_POSITIONS}). Skipping.")
+                    return
+            else:
+                print("Open positions: unknown (could not fetch) - proceeding cautiously.")
+
             print("Fetching liquid sampling markets...")
             try:
                 raw = self.polymarket.client.get_sampling_simplified_markets()
@@ -84,14 +175,31 @@ class Trader:
             best_trade = self.agent.source_best_trade(market)
             print(f"6. TRADE: {best_trade}")
 
-            amount = self.agent.format_trade_prompt_for_execution(best_trade)
-            print(f"Trade amount: {amount}")
+            prob, price = self._parse_prob_and_price(best_trade, market)
+            if prob is not None and price is not None:
+                edge = abs(prob - price)
+                print(f"Edge check: estimate={prob:.3f} market={price:.3f} edge={edge:.3f} (need >= {MIN_EDGE})")
+                if edge < MIN_EDGE:
+                    print(f"NO REAL EDGE ({edge:.3f} < {MIN_EDGE}). Skipping trade this hour.")
+                    return
+            else:
+                print("Edge check: could not determine market price; skipping trade for safety.")
+                return
 
-            # Find liquid token from sampling markets
+            amount = self.agent.format_trade_prompt_for_execution(best_trade)
+
+            max_trade = balance * MAX_TRADE_FRACTION
+            remaining_daily = max(spend_cap - spent_today, 0)
+            trade_amount = min(float(amount) if amount else max_trade, max_trade, remaining_daily)
+
+            if trade_amount < ABSOLUTE_MIN_TRADE:
+                print(f"Trade size ${trade_amount:.2f} below minimum ${ABSOLUTE_MIN_TRADE}. Skipping.")
+                return
+            print(f"Trade amount: ${trade_amount:.2f} (max/trade ${max_trade:.2f}, daily room ${remaining_daily:.2f})")
+
             token_id = self.get_liquid_token(question, sampling_data)
 
-            trade_amount = max(float(amount) if amount else 0, 1.0)
-
+            resp = None
             if token_id:
                 print(f"Found liquid token: {token_id[:20]}...")
                 from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
@@ -109,8 +217,16 @@ class Trader:
                 print(f"7. TRADED: {resp}")
             else:
                 print("No matching liquid token, trying direct execution...")
-                trade = self.polymarket.execute_market_order(market, trade_amount)
-                print(f"7. TRADED: {trade}")
+                resp = self.polymarket.execute_market_order(market, trade_amount)
+                print(f"7. TRADED: {resp}")
+
+            success = True
+            if isinstance(resp, dict):
+                success = resp.get("success", True)
+            if success:
+                state["spent"] = spent_today + trade_amount
+                self._save_state(state)
+                print(f"Daily spent now ${state['spent']:.2f} of ${spend_cap:.2f} cap.")
 
         except Exception as e:
             print(f"Error: {e}")
