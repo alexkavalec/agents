@@ -14,7 +14,7 @@ bitarray==2.9.2
 build==1.2.1
 cachetools==5.4.0
 certifi==2024.7.4
-cfgv==3.4.0
+cfgv==3.4.0 
 charset-normalizer==3.3.2
 chroma-hnswlib==0.7.6
 chromadb==0.5.5
