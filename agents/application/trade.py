@@ -79,7 +79,12 @@ class Trader:
         return None
 
     def _parse_prob_and_price(self, best_trade, market):
+        """prob = the bot's chosen price (its probability estimate, first number in
+        the trade string). price = the market's current 'Yes' price, read from
+        outcome_prices in metadata exactly like executor.source_best_trade does."""
+        import ast
         prob = price = None
+        # bot's estimate: FIRST price-like number in the trade text
         try:
             text = str(best_trade)
             m = re.search(r"price\s*[:=]\s*([0-9]*\.?[0-9]+)", text)
@@ -87,11 +92,14 @@ class Trader:
                 prob = float(m.group(1))
         except Exception:
             pass
+        # market price: from outcome_prices[0] in the market metadata
         try:
             meta = market[0].dict().get("metadata", {})
-            tid = meta.get("clobTokenIds") or meta.get("token_id")
-            if isinstance(tid, str) and tid:
-                price = self.polymarket.get_orderbook_price(tid)
+            op = meta.get("outcome_prices")
+            if isinstance(op, str):
+                op = ast.literal_eval(op)
+            if op:
+                price = float(op[0])  # 'Yes' price
         except Exception:
             pass
         return prob, price
