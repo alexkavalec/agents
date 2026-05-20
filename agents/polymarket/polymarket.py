@@ -56,25 +56,18 @@ class Polymarket:
         self._init_api_keys()
 
     def _init_api_keys(self) -> None:
-        funder = os.getenv("POLYGON_FUNDER_ADDRESS")
-        # Step 1: L1 auth to get credentials
+        # EOA wallet - signature type 0, no funder needed
         l1_client = ClobClient(
             host=self.clob_url,
             chain_id=self.chain_id,
             key=self.private_key,
-            signature_type=3,
-            funder=funder,
         )
         creds = l1_client.create_or_derive_api_key()
-
-        # Step 2: L2 auth client for trading
         self.client = ClobClient(
             host=self.clob_url,
             chain_id=self.chain_id,
             key=self.private_key,
             creds=creds,
-            signature_type=3,
-            funder=funder,
         )
 
     def get_all_markets(self) -> "list[SimpleMarket]":
