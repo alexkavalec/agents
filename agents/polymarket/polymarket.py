@@ -62,7 +62,7 @@ class Polymarket:
             host=self.clob_url,
             chain_id=self.chain_id,
             key=self.private_key,
-            signature_type=1,
+            signature_type=3,
             funder=funder,
         )
         creds = l1_client.create_or_derive_api_key()
@@ -73,7 +73,7 @@ class Polymarket:
             chain_id=self.chain_id,
             key=self.private_key,
             creds=creds,
-            signature_type=1,
+            signature_type=3,
             funder=funder,
         )
 
