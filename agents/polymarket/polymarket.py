@@ -56,11 +56,14 @@ class Polymarket:
         self._init_api_keys()
 
     def _init_api_keys(self) -> None:
-        # EOA wallet - signature type 0, no funder needed
+        # Deposit wallet flow - signature_type=3 (POLY_1271), funder = deposit wallet address
+        funder = os.getenv("POLYGON_FUNDER_ADDRESS")
         l1_client = ClobClient(
             host=self.clob_url,
             chain_id=self.chain_id,
             key=self.private_key,
+            signature_type=3,
+            funder=funder,
         )
         creds = l1_client.create_or_derive_api_key()
         self.client = ClobClient(
@@ -68,6 +71,8 @@ class Polymarket:
             chain_id=self.chain_id,
             key=self.private_key,
             creds=creds,
+            signature_type=3,
+            funder=funder,
         )
 
     def get_all_markets(self) -> "list[SimpleMarket]":
