@@ -229,14 +229,25 @@ class Polymarket:
         return resp
 
     def get_usdc_balance(self) -> float:
+        # Polymarket holds tradeable USDC in the FUNDER (deposit/proxy) wallet,
+        # not the raw signing wallet. Check the funder first, fall back to wallet.
+        addresses = []
+        funder = os.getenv("POLYGON_FUNDER_ADDRESS")
+        if funder:
+            addresses.append(funder)
         try:
-            balance_res = self.usdc.functions.balanceOf(
-                self.get_address_for_private_key()
-            ).call()
-            return float(balance_res / 10e5)
-        except Exception as e:
-            print(f"Balance error: {e}")
-            return 0.0
+            addresses.append(self.get_address_for_private_key())
+        except Exception:
+            pass
+        for addr in addresses:
+            try:
+                bal = self.usdc.functions.balanceOf(addr).call()
+                val = float(bal / 1e6)  # USDC has 6 decimals
+                if val > 0:
+                    return val
+            except Exception as e:
+                print(f"Balance error for {addr}: {e}")
+        return 0.0
 
 
 if __name__ == "__main__":
