@@ -7,6 +7,12 @@ from typing import List, Dict, Any
 
 import math
 
+# Hard market filters — applied before the AI sees any market
+MAX_SPREAD = 0.05        # skip markets with bid/ask spread > 5%
+MIN_VOLUME = 500         # skip markets with < $500 lifetime volume (illiquid/dead)
+MIN_DAYS = 1             # skip markets resolving today or already expired
+MAX_DAYS = 180           # skip markets resolving > 6 months out (capital locked too long)
+
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -203,11 +209,28 @@ class Executor:
             print(f"Live price enrichment failed: {e}")
         return market_dict
 
+    def _passes_hard_filters(self, m: dict) -> tuple:
+        """Return (passes: bool, reason: str). Checks spread, volume, days to resolution."""
+        spread = m.get("spread", 0) or 0
+        if spread > MAX_SPREAD:
+            return False, f"spread {spread:.3f} > {MAX_SPREAD}"
+        volume = m.get("volume", 0) or 0
+        if volume < MIN_VOLUME:
+            return False, f"volume ${volume:.0f} < ${MIN_VOLUME}"
+        days = m.get("days_to_resolution")
+        if days is not None:
+            if days < MIN_DAYS:
+                return False, f"resolves in {days}d (too soon)"
+            if days > MAX_DAYS:
+                return False, f"resolves in {days}d > {MAX_DAYS}d limit"
+        return True, ""
+
     def map_filtered_events_to_markets(
         self, filtered_events: "list[SimpleEvent]"
     ) -> "list[SimpleMarket]":
         markets = []
-        skipped = 0
+        skipped_prices = 0
+        skipped_filters: dict = {}
         for e in filtered_events:
             data = json.loads(e[0].json())
             market_ids = data["metadata"]["markets"].split(",")
@@ -215,12 +238,19 @@ class Executor:
                 market_data = self.gamma.get_market(market_id)
                 formatted_market_data = self.polymarket.map_api_to_market(market_data)
                 formatted_market_data = self._enrich_with_live_prices(formatted_market_data)
-                if self._has_usable_prices(formatted_market_data):
-                    markets.append(formatted_market_data)
-                else:
-                    skipped += 1
-        if skipped:
-            print(f"  Skipped {skipped} markets with no usable prices")
+                if not self._has_usable_prices(formatted_market_data):
+                    skipped_prices += 1
+                    continue
+                passes, reason = self._passes_hard_filters(formatted_market_data)
+                if not passes:
+                    skipped_filters[reason] = skipped_filters.get(reason, 0) + 1
+                    continue
+                markets.append(formatted_market_data)
+        if skipped_prices:
+            print(f"  Skipped {skipped_prices} markets with no usable prices")
+        if skipped_filters:
+            for reason, count in skipped_filters.items():
+                print(f"  Skipped {count} markets: {reason}")
         return markets
 
     def filter_markets(self, markets) -> "list[tuple]":

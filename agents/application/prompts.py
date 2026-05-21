@@ -102,9 +102,16 @@ class Prompter:
     def filter_markets(self) -> str:
         return (
             self.polymarket_analyst_api()
-            + f"""
-        
-        Filter these markets for the ones you will be best at trading on profitably.
+            + """
+
+        Filter these markets for the best trading opportunities. Prioritize markets where:
+        - The spread is tight (< 0.03 ideal) — wide spreads eat into profit
+        - Volume is high (> $5000) — liquid markets have better fills
+        - Days to resolution is 7–60 days — short enough to free capital, long enough to trade
+        - The current price implies meaningful uncertainty (not already near 0 or 1)
+        - The outcome is something that can be researched and predicted with an edge
+
+        Avoid markets that are very long-dated, very illiquid, or priced near certainty.
 
         """
         )

@@ -100,13 +100,14 @@ class PolymarketRAG:
 
         # create vector db
         def metadata_func(record: dict, metadata: dict) -> dict:
-
             metadata["id"] = record.get("id")
             metadata["outcomes"] = record.get("outcomes")
             metadata["outcome_prices"] = record.get("outcome_prices")
             metadata["question"] = record.get("question")
             metadata["clob_token_ids"] = record.get("clob_token_ids")
-
+            metadata["spread"] = record.get("spread")
+            metadata["volume"] = record.get("volume")
+            metadata["days_to_resolution"] = record.get("days_to_resolution")
             return metadata
 
         loader = JSONLoader(
