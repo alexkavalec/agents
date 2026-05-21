@@ -153,16 +153,24 @@ class Trader:
             else:
                 print("Open positions: unknown (could not fetch) - proceeding cautiously.")
 
-            last_trade_time = state.get("last_trade_time")
-            if last_trade_time:
-                try:
-                    elapsed = (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(last_trade_time)).total_seconds() / 60
-                    if elapsed < TRADE_COOLDOWN_MINUTES:
-                        print(f"COOLDOWN: last trade was {elapsed:.1f} min ago (need {TRADE_COOLDOWN_MINUTES} min). Skipping.")
-                        return
-                    print(f"Cooldown OK: last trade was {elapsed:.1f} min ago.")
-                except Exception:
-                    pass
+            # Cooldown: API-first (survives redeploys), state file as fallback
+            elapsed = None
+            try:
+                elapsed = self.polymarket.get_last_trade_minutes_ago()
+            except Exception:
+                pass
+            if elapsed is None:
+                ltt = state.get("last_trade_time")
+                if ltt:
+                    try:
+                        elapsed = (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(ltt)).total_seconds() / 60
+                    except Exception:
+                        pass
+            if elapsed is not None:
+                if elapsed < TRADE_COOLDOWN_MINUTES:
+                    print(f"COOLDOWN: last trade was {elapsed:.1f} min ago (need {TRADE_COOLDOWN_MINUTES} min). Skipping.")
+                    return
+                print(f"Cooldown OK: last trade was {elapsed:.1f} min ago.")
 
             events = self.polymarket.get_all_tradeable_events()
             print(f"2. FOUND {len(events)} EVENTS")
@@ -216,9 +224,17 @@ class Trader:
 
             token_id, trade_side = self._resolve_trade(market, prob, price)
 
+            # Dedup: check live positions first (survives redeploys), state file as fallback
+            try:
+                held = self.polymarket.get_held_token_ids()
+                if token_id and token_id in held:
+                    print(f"DEDUP: already holding token {token_id[:20]}... Skipping.")
+                    return
+            except Exception as e:
+                print(f"Position dedup check failed: {e}")
             traded_tokens = state.get("traded_tokens", [])
             if token_id and token_id in traded_tokens:
-                print(f"DEDUP: token {token_id[:20]}... already traded today. Skipping.")
+                print(f"DEDUP: token {token_id[:20]}... already traded today (state file). Skipping.")
                 return
 
             resp = None
