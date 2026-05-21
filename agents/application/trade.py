@@ -202,13 +202,20 @@ class Trader:
                 print("No filtered markets, exiting.")
                 return
 
+            # Chroma can drop metadata fields when storing; keep a fallback lookup
+            # from the original market dicts (which always have questions after filtering).
+            markets_by_id = {str(m.get("id", "")): m for m in markets}
+
             market = None
             question = ""
             for candidate in filtered_markets:
-                q = candidate[0].dict()["metadata"].get("question", "")
+                meta = candidate[0].metadata
+                market_id = str(meta.get("id", ""))
+                q = meta.get("question", "") or (markets_by_id.get(market_id) or {}).get("question", "")
                 if q:
                     market = candidate
                     question = q
+                    candidate[0].metadata["question"] = q  # re-inject for source_best_trade
                     break
             if market is None:
                 print("No filtered markets have a valid question. Skipping.")
