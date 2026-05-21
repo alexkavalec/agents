@@ -2,6 +2,7 @@ import os
 import json
 import ast
 import re
+import logging
 from typing import List, Dict, Any
 
 import math
@@ -31,6 +32,8 @@ def retain_keys(data, keys_to_retain):
 class Executor:
     def __init__(self, default_model='gpt-3.5-turbo-16k') -> None:
         load_dotenv()
+        # Suppress verbose 404 errors from the CLOB client library
+        logging.getLogger("py_clob_client_v2").setLevel(logging.CRITICAL)
         max_token_model = {'gpt-3.5-turbo-16k':15000, 'gpt-4-1106-preview':95000}
         self.token_limit = max_token_model.get(default_model)
         self.prompter = Prompter()
@@ -134,18 +137,47 @@ class Executor:
         print()
         return self.chroma.events(events, prompt)
 
+    def _safe_parse_list(self, value) -> list:
+        """Robustly convert any Gamma/Chroma price/id field to a Python list."""
+        if isinstance(value, list):
+            return value
+        if value is None:
+            return []
+        s = str(value).strip()
+        if s in ('None', 'null', '', '[]'):
+            return []
+        # Try JSON first (Gamma returns JSON-encoded strings)
+        try:
+            result = json.loads(s)
+            return result if isinstance(result, list) else []
+        except Exception:
+            pass
+        # Fall back to ast.literal_eval for Python repr strings
+        try:
+            result = ast.literal_eval(s)
+            return result if isinstance(result, list) else []
+        except Exception:
+            return []
+
+    def _has_usable_prices(self, market_dict: dict) -> bool:
+        op = self._safe_parse_list(market_dict.get("outcome_prices"))
+        if not op:
+            return False
+        try:
+            return not all(float(p) in (0.0, 1.0) for p in op)
+        except Exception:
+            return False
+
     def _enrich_with_live_prices(self, market_dict: dict) -> dict:
         """Replace Gamma placeholder outcome_prices with live CLOB prices."""
         try:
-            op_str = market_dict.get("outcome_prices", "[]")
-            op = ast.literal_eval(op_str) if isinstance(op_str, str) else (op_str or [])
+            op = self._safe_parse_list(market_dict.get("outcome_prices"))
             # Gamma returns ["0","1"] or null when there's no real AMM price data.
             # Treat any entry that is exactly 0.0 or 1.0 as a placeholder.
             if op and not any(float(p) in (0.0, 1.0) for p in op):
                 return market_dict  # prices look real, skip enrichment
 
-            clob_ids_str = market_dict.get("clob_token_ids", "[]")
-            clob_ids = ast.literal_eval(clob_ids_str) if isinstance(clob_ids_str, str) else (clob_ids_str or [])
+            clob_ids = self._safe_parse_list(market_dict.get("clob_token_ids"))
             if not clob_ids:
                 return market_dict
 
@@ -156,14 +188,17 @@ class Executor:
                 except Exception:
                     try:
                         price = self.polymarket.get_orderbook_price(str(token_id))
-                    except Exception as e:
-                        print(f"  CLOB price fetch failed for token {str(token_id)[:16]}...: {e}")
+                    except Exception:
                         continue
                 live_prices.append(str(round(price, 4)))
 
             if live_prices and len(live_prices) == len(clob_ids):
                 market_dict["outcome_prices"] = str(live_prices)
                 print(f"  Enriched outcome_prices from CLOB: {live_prices}")
+            elif live_prices:
+                # Partial enrichment — use what we got
+                market_dict["outcome_prices"] = str(live_prices)
+                print(f"  Partial CLOB enrichment: {live_prices} (got {len(live_prices)}/{len(clob_ids)})")
         except Exception as e:
             print(f"Live price enrichment failed: {e}")
         return market_dict
@@ -172,6 +207,7 @@ class Executor:
         self, filtered_events: "list[SimpleEvent]"
     ) -> "list[SimpleMarket]":
         markets = []
+        skipped = 0
         for e in filtered_events:
             data = json.loads(e[0].json())
             market_ids = data["metadata"]["markets"].split(",")
@@ -179,7 +215,12 @@ class Executor:
                 market_data = self.gamma.get_market(market_id)
                 formatted_market_data = self.polymarket.map_api_to_market(market_data)
                 formatted_market_data = self._enrich_with_live_prices(formatted_market_data)
-                markets.append(formatted_market_data)
+                if self._has_usable_prices(formatted_market_data):
+                    markets.append(formatted_market_data)
+                else:
+                    skipped += 1
+        if skipped:
+            print(f"  Skipped {skipped} markets with no usable prices")
         return markets
 
     def filter_markets(self, markets) -> "list[tuple]":
@@ -192,8 +233,8 @@ class Executor:
     def source_best_trade(self, market_object) -> str:
         market_document = market_object[0].dict()
         market = market_document["metadata"]
-        outcome_prices = ast.literal_eval(market["outcome_prices"])
-        outcomes = ast.literal_eval(market["outcomes"])
+        outcome_prices = self._safe_parse_list(market.get("outcome_prices"))
+        outcomes = self._safe_parse_list(market.get("outcomes"))
         question = market["question"]
         description = market_document["page_content"]
 
