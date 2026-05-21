@@ -257,12 +257,54 @@ class Executor:
         print(f"  {len(markets)} markets with question + usable prices passed all filters")
         return markets
 
-    def filter_markets(self, markets) -> "list[tuple]":
+    def filter_markets(self, markets: list) -> "list[tuple]":
+        """Rank markets by passing structured data directly to the LLM.
+        Bypasses Chroma to avoid metadata loss on retrieval."""
+        from langchain_core.documents import Document
         prompt = self.prompter.filter_markets()
-        print()
-        print("... prompting ... ", prompt)
-        print()
-        return self.chroma.markets(markets, prompt)
+
+        slim = json.dumps([{
+            "id": m.get("id"),
+            "question": m.get("question", ""),
+            "spread": m.get("spread"),
+            "volume": m.get("volume"),
+            "days_to_resolution": m.get("days_to_resolution"),
+            "outcome_prices": m.get("outcome_prices"),
+        } for m in markets], indent=2)
+
+        messages = [
+            SystemMessage(content=prompt),
+            HumanMessage(content=(
+                f"Markets:\n{slim}\n\n"
+                "Return ONLY a JSON array of the top 4 market IDs ranked best first. "
+                "Example: [12345, 67890]"
+            )),
+        ]
+        result = self.llm.invoke(messages)
+
+        selected_ids = []
+        try:
+            ids_raw = re.search(r'\[[\d,\s]+\]', result.content)
+            if ids_raw:
+                selected_ids = json.loads(ids_raw.group(0))
+        except Exception:
+            pass
+
+        if not selected_ids:
+            markets_sorted = sorted(markets, key=lambda m: m.get("volume", 0) or 0, reverse=True)
+            selected_ids = [m.get("id") for m in markets_sorted[:4]]
+
+        markets_by_id = {m.get("id"): m for m in markets}
+        docs = []
+        for mid in selected_ids:
+            m = markets_by_id.get(mid)
+            if m:
+                doc = Document(
+                    page_content=m.get("description", "") or m.get("question", ""),
+                    metadata=m,
+                )
+                docs.append((doc, 1.0))
+        return docs[:4]
 
     def source_best_trade(self, market_object) -> str:
         market_document = market_object[0].dict()
