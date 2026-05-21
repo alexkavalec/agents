@@ -248,23 +248,13 @@ class Polymarket:
             if resp.status_code == 200:
                 data = resp.json()
                 if data:
-                    item = data[0]
-                    print(f"Activity API keys: {list(item.keys())}")
-                    for field in ("timestamp", "createdAt", "created_at", "t", "time"):
-                        ts_raw = item.get(field)
-                        if ts_raw is not None:
-                            ts = float(ts_raw)
-                            if ts > 1e10:
-                                ts /= 1000  # milliseconds → seconds
-                            last_dt = datetime.datetime.utcfromtimestamp(ts)
-                            elapsed = (datetime.datetime.utcnow() - last_dt).total_seconds() / 60
-                            print(f"Activity API: last trade {elapsed:.1f} min ago (field={field})")
-                            return elapsed
-                    print(f"Activity API: no timestamp field found in {list(item.keys())}")
-                else:
-                    print("Activity API: no trades found (new account or no history)")
-            else:
-                print(f"Activity API HTTP {resp.status_code}")
+                    ts_raw = data[0].get("timestamp")
+                    if ts_raw is not None:
+                        ts = float(ts_raw)
+                        if ts > 1e10:
+                            ts /= 1000  # milliseconds → seconds
+                        last_dt = datetime.datetime.utcfromtimestamp(ts)
+                        return (datetime.datetime.utcnow() - last_dt).total_seconds() / 60
         except Exception as e:
             print(f"Activity API check failed: {e}")
         return None
@@ -274,12 +264,8 @@ class Polymarket:
         Survives redeploys — reads live Polymarket positions."""
         held = set()
         try:
-            positions = self.get_open_positions()
-            if positions:
-                print(f"Position keys: {list(positions[0].keys())}")
-            for p in positions:
-                asset = (p.get("asset") or p.get("token_id") or
-                         p.get("assetId") or p.get("conditionId"))
+            for p in self.get_open_positions():
+                asset = p.get("asset")
                 if asset:
                     held.add(str(asset))
         except Exception as e:
