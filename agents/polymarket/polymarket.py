@@ -162,17 +162,12 @@ class Polymarket:
             "new": event["new"],
             "featured": event["featured"],
             "restricted": event["restricted"],
-            "end": event["endDate"],
+            "end": event.get("endDate", ""),
             "markets": ",".join([x["id"] for x in event["markets"]]),
         }
 
     def filter_events_for_trading(self, events: "list[SimpleEvent]") -> "list[SimpleEvent]":
-        tradeable = []
-        for event in events:
-            print(f"DEBUG event={event.title[:30]} active={event.active} closed={event.closed} archived={event.archived} restricted={event.restricted}")
-            if event.active and not event.archived and not event.closed:
-                tradeable.append(event)
-        return tradeable
+        return [e for e in events if e.active and not e.archived and not e.closed]
 
     def get_all_tradeable_events(self) -> "list[SimpleEvent]":
         all_events = self.get_all_events()

@@ -176,7 +176,6 @@ class GammaMarketClient:
 
     def get_market(self, market_id: int) -> dict():
         url = self.gamma_markets_endpoint + "/" + str(market_id)
-        print(url)
         response = httpx.get(url)
         return response.json()
 
