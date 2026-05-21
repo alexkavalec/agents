@@ -207,6 +207,9 @@ class Trader:
             print(f"Selected: {question[:80]}")
 
             best_trade = self.agent.source_best_trade(market)
+            if best_trade is None:
+                print("Could not generate trade (market missing question). Skipping.")
+                return
             print(f"6. TRADE: {best_trade}")
 
             prob, price = self._parse_prob_and_price(best_trade, market)
