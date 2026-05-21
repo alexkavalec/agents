@@ -16,45 +16,84 @@
 ## Current Architecture (simple, single-agent pipeline)
 One `Executor` object runs everything sequentially each hour:
 
-1. **Market scanner** — fetches ~50 events + ~1000 markets from Gamma API
+1. **Market scanner** — fetches ~50 events from Gamma API
 2. **RAG filter** — Chroma vector search narrows to 4 events
-3. **Market mapper** — expands to ~131 markets, enriches with live CLOB prices
-4. **AI market selector** — GPT picks 1 best market from 131
+3. **Market mapper** — expands to ~17 markets with live CLOB prices (114 skipped — no usable prices)
+4. **AI market selector** — GPT picks 1 best market
 5. **Superforecaster** — GPT assigns probability to the chosen outcome
 6. **Trade constructor** — GPT outputs price/size/side
-7. **Risk checker** — guardrails in trade.py (edge, spend, loss, position cap)
+7. **Risk checker** — guardrails in trade.py (edge, spend, loss, position cap, cooldown, dedup)
 8. **Order executor** — CLOB client places the order if risk passes
+
+---
+
+## Memory: Two Different Kinds
+
+### 1. Dev-time memory (this file)
+`CLAUDE.md` is read by **Claude Code** (the coding tool) at the start of each dev session.
+It is NOT read by the running trading bot. It's documentation for the developer.
+
+### 2. Runtime memory (shared agent state)
+Running agents share state via files or in-memory data structures — not via CLAUDE.md.
+Current runtime state lives in `trader_daily_state.json` (project root):
+```json
+{
+  "date": "2026-05-21",
+  "start_balance": 19.38,
+  "spent": 1.94,
+  "last_trade_time": "2026-05-21T05:18:52",
+  "traded_tokens": ["17522237181479319953..."]
+}
+```
+Cooldown and dedup also use live Polymarket API calls (`data-api.polymarket.com/activity`
+and `/positions`) so guards survive Railway container restarts.
 
 ---
 
 ## Future: Multi-Agent Architecture (saved for later)
 
-The current pipeline is one GPT call chain. A proper multi-agent version would split
-this into specialized agents running in parallel with structured handoffs:
+Multiple Claude agents can live in **one repo** and coordinate via shared state files.
+Each agent is just a Python class calling `anthropic.Anthropic()` with its own model + system prompt.
+The orchestrator (`trade.py`) calls them in sequence or in parallel via `asyncio`.
+
+### Proposed file layout
+```
+agents/
+  application/
+    trade.py              ← orchestrator (already exists)
+    executor.py           ← single agent today (gets split into below)
+    agents/
+      scanner.py          ← haiku, fast parallel market scanning
+      analyst.py          ← opus, deep per-market research
+      forecaster.py       ← opus, probability + confidence intervals
+      risk.py             ← opus, Kelly sizing + portfolio correlation
+      postmortem.py       ← haiku, scores past trades after resolution
+  memory/
+    trade_history.json    ← every trade logged with outcome
+    forecaster_log.json   ← postmortem feeds lessons back to forecaster
+```
 
 ### Proposed agents
 
-| Agent | Role |
-|---|---|
-| **Scanner** | Parallel market research across multiple event categories simultaneously |
-| **Analyst** | Per-market deep research — news, base rates, expert opinion |
-| **Forecaster** | Probability assignment with confidence intervals, not just a point estimate |
-| **Risk** | Dedicated reasoning agent: portfolio exposure, correlation, Kelly sizing |
-| **Executor** | Order placement, slippage monitoring, partial fill handling |
-| **Post-mortem** | After each market resolves, scores the prediction, updates strategy memory |
+| Agent | Model | Role |
+|---|---|---|
+| **Scanner** | `claude-haiku-4-5-20251001` | Parallel scanning across event categories |
+| **Analyst** | `claude-haiku-4-5-20251001` | Per-market research — news, base rates |
+| **Forecaster** | `claude-opus-4-7` | Probability with confidence intervals |
+| **Risk** | `claude-opus-4-7` | Kelly sizing, portfolio exposure, correlation |
+| **Executor** | — | Order placement (no LLM needed, pure logic) |
+| **Post-mortem** | `claude-haiku-4-5-20251001` | Scores predictions, writes to forecaster_log.json |
 
-### What's missing from current setup that multi-agent would fix
+### What multi-agent would fix vs today
 - **No post-mortem loop** — bot never learns from past trades; each cycle starts fresh
 - **No parallel research** — markets evaluated one at a time, sequentially
 - **No persistent memory** — no record of what worked/didn't across cycles
 - **Risk is if-statements** — not a reasoning agent, can't adapt to novel situations
 - **Single point of failure** — one GPT call chain, no cross-checking between agents
 
-### Implementation notes (when ready)
-- Use the Anthropic Claude API with `claude-opus-4-7` for high-stakes reasoning agents (forecaster, risk)
-- Use `claude-haiku-4-5-20251001` for high-volume scanning/filtering tasks
-- Persist post-mortem results to a simple SQLite or JSON log so forecaster can reference history
-- Consider the Claude Agent SDK for orchestration once complexity warrants it
+### When to build it
+Wait until the single-agent pipeline is stable and trading correctly for ~1–2 weeks.
+The bottleneck right now is trade quality, not agent specialization.
 
 ---
 
@@ -64,9 +103,12 @@ this into specialized agents running in parallel with structured handoffs:
 - `MAX_OPEN_POSITIONS = 5` — enforced via data-api.polymarket.com/positions
 - `DAILY_SPEND_FRACTION = 0.30` — stop after spending 30% of day-start balance
 - `DAILY_LOSS_FRACTION = 0.15` — halt for the day if balance drops 15%
-- Daily state persisted in `/tmp/trader_daily_state.json`
+- `TRADE_COOLDOWN_MINUTES = 55` — min gap between trades; reads activity API (survives redeploys)
+- Dedup — skips if token already held in open positions (reads positions API)
+- State file: `trader_daily_state.json` in project root
 
 ## Known Issues / To-Do
-- [ ] **Task #3** — Improve trade sizing/side logic in `source_best_trade` (crude original logic)
-- [ ] **Task #4** — Silence cosmetic `Could not create api key` auth errors (feed real API creds as env vars)
-- [ ] **Task #5** — Optional monitoring (Discord webhook or simple dashboard)
+- [x] **Task #3** — Trade side logic fixed (`_resolve_trade` reads token IDs from selected market)
+- [x] **Task #4** — Auth errors silenced (`derive_api_key()` + optional `CLOB_API_*` env vars)
+- [ ] **Task #5** — Discord webhook notifications when bot trades or hits a guardrail
+- [ ] **Task #6** — Multi-agent architecture (see above — do after ~2 weeks of stable trading)
