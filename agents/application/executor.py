@@ -241,6 +241,9 @@ class Executor:
                 if not self._has_usable_prices(formatted_market_data):
                     skipped_prices += 1
                     continue
+                if not formatted_market_data.get("question", ""):
+                    skipped_filters["no question"] = skipped_filters.get("no question", 0) + 1
+                    continue
                 passes, reason = self._passes_hard_filters(formatted_market_data)
                 if not passes:
                     skipped_filters[reason] = skipped_filters.get(reason, 0) + 1
@@ -251,6 +254,7 @@ class Executor:
         if skipped_filters:
             for reason, count in skipped_filters.items():
                 print(f"  Skipped {count} markets: {reason}")
+        print(f"  {len(markets)} markets with question + usable prices passed all filters")
         return markets
 
     def filter_markets(self, markets) -> "list[tuple]":
