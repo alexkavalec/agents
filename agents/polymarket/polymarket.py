@@ -124,9 +124,9 @@ class Polymarket:
 
         result = {
             "id": int(market.get("id", 0)),
-            "question": market.get("question", ""),
+            "question": market.get("question") or "",
             "end": end_date,
-            "description": market.get("description", ""),
+            "description": market.get("description") or "",
             "active": market.get("active", False),
             "funded": market.get("funded", False),
             "rewardsMinSize": float(market.get("rewardsMinSize", 0) or 0),
