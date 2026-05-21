@@ -20,6 +20,13 @@ DAILY_LOSS_FRACTION = 0.15   # stop for the day if balance drops 15% below the d
 ABSOLUTE_MIN_TRADE = 1.0   # Polymarket order minimum (~$1). Below this, skip.
 TRADE_COOLDOWN_MINUTES = 55  # minimum gap between trades — blocks back-to-back redeploy trades
 STATE_FILE = "trader_daily_state.json"  # project root survives Railway restarts better than /tmp
+
+# Position management — thresholds before ANY action is even considered.
+# Small moves are completely ignored. AI re-evaluation is always required.
+POSITION_REVIEW_MIN_MOVE    = 0.50   # ignore positions that moved < 50% — that's just noise
+POSITION_TAKE_PROFIT_GAIN   = 0.60   # consider taking profit if up >= 60%
+POSITION_STOP_LOSS_LOSS     = -0.60  # consider cutting if down >= 60%
+POSITION_ACTION_EDGE_MAX    = 0.08   # only act if AI now shows edge < 8% (thesis gone)
 # =========================================================================
 
 
@@ -129,6 +136,8 @@ class Trader:
                 print(f"Could not read balance ({e}); aborting this run for safety.")
                 return
             print(f"Balance: ${balance:.2f}")
+
+            self.maintain_positions()
 
             state = self._load_state(balance)
             start_bal = state["start_balance"]
@@ -274,8 +283,122 @@ class Trader:
             import traceback
             traceback.print_exc()
 
-    def maintain_positions(self):
-        pass
+    def _reeval_position_probability(self, question: str, description: str) -> float:
+        """Re-run superforecaster on an existing position. Returns p(YES) or None."""
+        try:
+            prompt = self.agent.prompter.superforecaster(question, description, ["Yes", "No"])
+            result = self.agent.llm.invoke(prompt)
+            m = re.search(r"likelihood\s*`?([0-9]*\.?[0-9]+)", result.content)
+            if m:
+                p = float(m.group(1))
+                print(f"  AI re-eval: p(Yes) = {p:.2f}")
+                return p
+        except Exception as e:
+            print(f"  Re-eval error: {e}")
+        return None
+
+    def _close_position(self, token_id: str, size: float, reason: str) -> None:
+        """Sell the entire position via a market SELL order."""
+        try:
+            from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
+            order_args = MarketOrderArgs(
+                token_id=token_id,
+                amount=size,
+                side=Side.SELL,
+                order_type=OrderType.FOK,
+            )
+            resp = self.polymarket.client.create_and_post_market_order(
+                order_args=order_args,
+                options=PartialCreateOrderOptions(tick_size="0.01"),
+                order_type=OrderType.FOK,
+            )
+            print(f"  {reason} executed: {resp}")
+        except Exception as e:
+            print(f"  {reason} sell failed: {e}")
+
+    def maintain_positions(self) -> None:
+        """Review open positions each cycle.
+        Only exits when price has moved dramatically AND AI confirms the thesis is gone.
+        A small dip is never sufficient reason to close — the threshold is intentionally high."""
+        try:
+            positions = self.polymarket.get_open_positions()
+            if not positions:
+                return
+            print(f"Reviewing {len(positions)} open position(s)...")
+
+            for p in positions:
+                asset    = p.get("asset", "")
+                outcome  = p.get("outcome", "")   # "Yes" or "No"
+                title    = p.get("title", asset[:20])
+                size     = float(p.get("size", 0) or 0)
+                avg_price = float(p.get("avgPrice", 0) or 0)
+
+                if not asset or size <= 0:
+                    continue
+
+                # Compute current value — use API fields if present, else CLOB price
+                initial_value = float(p.get("initialValue", 0) or 0)
+                current_value = float(p.get("currentValue", 0) or 0)
+                if initial_value <= 0 and avg_price > 0:
+                    initial_value = size * avg_price
+                if current_value <= 0:
+                    try:
+                        current_value = size * self.polymarket.get_midpoint_price(asset)
+                    except Exception:
+                        continue
+                if initial_value <= 0:
+                    continue
+
+                pnl_pct = (current_value - initial_value) / initial_value
+                print(f"  {title[:45]} [{outcome}] P&L: {pnl_pct:+.1%}")
+
+                # Gate 1: ignore anything under the minimum move threshold.
+                # This is intentional — small dips are noise, not a reason to exit.
+                if abs(pnl_pct) < POSITION_REVIEW_MIN_MOVE:
+                    continue
+
+                # Gate 2: significant move — re-run the AI before doing anything
+                print(f"  Significant move — running AI re-evaluation...")
+                market_data = self.polymarket.get_market(asset)
+                if not market_data:
+                    print(f"  Could not fetch market data, holding.")
+                    continue
+
+                question    = market_data.get("question", "")
+                description = market_data.get("description", "")
+                if not question:
+                    continue
+
+                ai_p_yes = self._reeval_position_probability(question, description)
+                if ai_p_yes is None:
+                    print(f"  AI re-eval failed — holding.")
+                    continue
+
+                # Compute current edge for the side we hold
+                current_token_price = current_value / size
+                if outcome.lower() == "yes":
+                    current_edge = ai_p_yes - current_token_price
+                else:
+                    current_edge = (1.0 - ai_p_yes) - current_token_price
+
+                # Gate 3: only act if the edge has genuinely collapsed.
+                # If the AI still sees a strong edge, hold regardless of price move.
+                if abs(current_edge) >= POSITION_ACTION_EDGE_MAX:
+                    print(f"  AI still sees edge {current_edge:+.2f} — holding despite {pnl_pct:+.1%} move.")
+                    continue
+
+                # Both gates passed: price moved hard AND AI confirms thesis is broken
+                if pnl_pct >= POSITION_TAKE_PROFIT_GAIN:
+                    print(f"  TAKE PROFIT: up {pnl_pct:+.1%}, AI edge = {current_edge:+.2f} (closed)")
+                    self._close_position(asset, size, "TAKE PROFIT")
+                elif pnl_pct <= POSITION_STOP_LOSS_LOSS:
+                    print(f"  STOP LOSS: down {pnl_pct:+.1%}, AI confirms thesis broken (edge = {current_edge:+.2f})")
+                    self._close_position(asset, size, "STOP LOSS")
+
+        except Exception as e:
+            print(f"maintain_positions error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def incentive_farm(self):
         pass
