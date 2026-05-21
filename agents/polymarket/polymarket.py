@@ -198,6 +198,32 @@ class Polymarket:
     def get_orderbook_price(self, token_id: str) -> float:
         return float(self.client.get_price(token_id, side="BUY"))
 
+    def get_midpoint_price(self, token_id: str) -> float:
+        """Return the bid/ask midpoint for a CLOB token (best neutral price estimate)."""
+        result = self.client.get_midpoint(token_id)
+        if isinstance(result, dict):
+            return float(result.get("mid", result.get("price", 0)))
+        return float(result)
+
+    def get_open_positions(self) -> list:
+        """Return current open positions via the Polymarket data API."""
+        address = os.getenv("POLYGON_FUNDER_ADDRESS") or os.getenv("POLYGON_ADDRESS")
+        if not address:
+            return []
+        try:
+            resp = httpx.get(
+                "https://data-api.polymarket.com/positions",
+                params={"user": address, "limit": 500, "sizeThreshold": "0.01"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                return [p for p in resp.json() if float(p.get("size", 0)) > 0.01]
+            print(f"Positions API HTTP {resp.status_code}")
+            return []
+        except Exception as e:
+            print(f"get_open_positions error: {e}")
+            return []
+
     def get_address_for_private_key(self):
         account = self.w3.eth.account.from_key(str(self.private_key))
         return account.address
