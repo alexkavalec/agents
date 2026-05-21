@@ -134,6 +134,40 @@ class Executor:
         print()
         return self.chroma.events(events, prompt)
 
+    def _enrich_with_live_prices(self, market_dict: dict) -> dict:
+        """Replace Gamma placeholder outcome_prices with live CLOB prices."""
+        try:
+            op_str = market_dict.get("outcome_prices", "[]")
+            op = ast.literal_eval(op_str) if isinstance(op_str, str) else (op_str or [])
+            # Gamma returns ["0","1"] or null when there's no real AMM price data.
+            # Treat any entry that is exactly 0.0 or 1.0 as a placeholder.
+            if op and not any(float(p) in (0.0, 1.0) for p in op):
+                return market_dict  # prices look real, skip enrichment
+
+            clob_ids_str = market_dict.get("clob_token_ids", "[]")
+            clob_ids = ast.literal_eval(clob_ids_str) if isinstance(clob_ids_str, str) else (clob_ids_str or [])
+            if not clob_ids:
+                return market_dict
+
+            live_prices = []
+            for token_id in clob_ids:
+                try:
+                    price = self.polymarket.get_midpoint_price(str(token_id))
+                except Exception:
+                    try:
+                        price = self.polymarket.get_orderbook_price(str(token_id))
+                    except Exception as e:
+                        print(f"  CLOB price fetch failed for token {str(token_id)[:16]}...: {e}")
+                        continue
+                live_prices.append(str(round(price, 4)))
+
+            if live_prices and len(live_prices) == len(clob_ids):
+                market_dict["outcome_prices"] = str(live_prices)
+                print(f"  Enriched outcome_prices from CLOB: {live_prices}")
+        except Exception as e:
+            print(f"Live price enrichment failed: {e}")
+        return market_dict
+
     def map_filtered_events_to_markets(
         self, filtered_events: "list[SimpleEvent]"
     ) -> "list[SimpleMarket]":
@@ -144,6 +178,7 @@ class Executor:
             for market_id in market_ids:
                 market_data = self.gamma.get_market(market_id)
                 formatted_market_data = self.polymarket.map_api_to_market(market_data)
+                formatted_market_data = self._enrich_with_live_prices(formatted_market_data)
                 markets.append(formatted_market_data)
         return markets
 
