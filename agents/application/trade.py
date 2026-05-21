@@ -59,24 +59,31 @@ class Trader:
             except Exception:
                 pass
 
-    def get_liquid_token(self, question, sampling_markets):
-        if not question or not sampling_markets:
-            return None
-        q_lower = question.lower()[:30]
-        for sm in sampling_markets:
-            try:
-                if isinstance(sm, dict):
-                    sm_q = sm.get("question", "").lower()
-                    tokens = sm.get("tokens", [])
-                    if q_lower[:20] in sm_q or sm_q[:20] in q_lower:
-                        if tokens:
-                            t = tokens[1] if len(tokens) > 1 else tokens[0]
-                            tid = t.get("token_id", "") if isinstance(t, dict) else str(t)
-                            if tid and tid not in ("0", ""):
-                                return tid
-            except Exception:
-                continue
-        return None
+    def _resolve_trade(self, market, prob, market_price):
+        """Return (token_id, side_label) for the correct side of the trade.
+
+        Uses the token IDs already stored in the selected market's Chroma metadata.
+        If bot estimate > market price: Yes is underpriced → buy YES (token index 0).
+        If bot estimate < market price: Yes is overpriced → buy NO (token index 1).
+        """
+        try:
+            meta = market[0].dict().get("metadata", {})
+            clob_ids = self.agent._safe_parse_list(meta.get("clob_token_ids"))
+            if not clob_ids:
+                return None, None
+            # index 0 = YES token, index 1 = NO token (Polymarket convention)
+            if prob > market_price:
+                token_id = str(clob_ids[0])
+                side = "YES"
+            else:
+                token_id = str(clob_ids[1]) if len(clob_ids) > 1 else str(clob_ids[0])
+                side = "NO"
+            if not token_id or token_id in ("0", ""):
+                return None, None
+            return token_id, side
+        except Exception as e:
+            print(f"_resolve_trade error: {e}")
+            return None, None
 
     def _parse_prob_and_price(self, best_trade, market):
         """prob = the bot's chosen price (its probability estimate, first number in
@@ -143,15 +150,6 @@ class Trader:
             else:
                 print("Open positions: unknown (could not fetch) - proceeding cautiously.")
 
-            print("Fetching liquid sampling markets...")
-            try:
-                raw = self.polymarket.client.get_sampling_simplified_markets()
-                sampling_data = raw.get("data", raw) if isinstance(raw, dict) else raw
-                print(f"1. FOUND {len(sampling_data)} LIQUID SAMPLING MARKETS")
-            except Exception as e:
-                print(f"Sampling error: {e}")
-                sampling_data = []
-
             events = self.polymarket.get_all_tradeable_events()
             print(f"2. FOUND {len(events)} EVENTS")
             if not events:
@@ -202,11 +200,11 @@ class Trader:
                 return
             print(f"Trade amount: ${trade_amount:.2f} (max/trade ${max_trade:.2f}, daily room ${remaining_daily:.2f})")
 
-            token_id = self.get_liquid_token(question, sampling_data)
+            token_id, trade_side = self._resolve_trade(market, prob, price)
 
             resp = None
             if token_id:
-                print(f"Found liquid token: {token_id[:20]}...")
+                print(f"Placing BUY {trade_side} order, token: {token_id[:20]}...")
                 from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
                 order_args = MarketOrderArgs(
                     token_id=token_id,
@@ -221,9 +219,7 @@ class Trader:
                 )
                 print(f"7. TRADED: {resp}")
             else:
-                print("No matching liquid token, trying direct execution...")
-                resp = self.polymarket.execute_market_order(market, trade_amount)
-                print(f"7. TRADED: {resp}")
+                print("Could not resolve token ID for selected market — skipping trade for safety.")
 
             success = True
             if isinstance(resp, dict):
