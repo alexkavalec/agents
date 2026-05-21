@@ -3,6 +3,7 @@
 import os
 import ast
 import time
+import datetime
 
 from dotenv import load_dotenv
 
@@ -231,6 +232,49 @@ class Polymarket:
         except Exception as e:
             print(f"get_open_positions error: {e}")
             return []
+
+    def get_last_trade_minutes_ago(self):
+        """Return minutes since most recent trade via the Polymarket activity API.
+        Returns None if unavailable. Survives redeploys — reads live API state."""
+        address = os.getenv("POLYGON_FUNDER_ADDRESS") or os.getenv("POLYGON_ADDRESS")
+        if not address:
+            return None
+        try:
+            resp = httpx.get(
+                "https://data-api.polymarket.com/activity",
+                params={"user": address, "limit": 5},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data:
+                    item = data[0]
+                    for field in ("timestamp", "createdAt", "created_at", "t", "time"):
+                        ts_raw = item.get(field)
+                        if ts_raw is not None:
+                            ts = float(ts_raw)
+                            if ts > 1e10:
+                                ts /= 1000  # milliseconds → seconds
+                            last_dt = datetime.datetime.utcfromtimestamp(ts)
+                            elapsed = (datetime.datetime.utcnow() - last_dt).total_seconds() / 60
+                            return elapsed
+        except Exception as e:
+            print(f"Activity API check failed: {e}")
+        return None
+
+    def get_held_token_ids(self) -> set:
+        """Return set of CLOB token IDs currently held as open positions.
+        Survives redeploys — reads live Polymarket positions."""
+        held = set()
+        try:
+            for p in self.get_open_positions():
+                asset = (p.get("asset") or p.get("token_id") or
+                         p.get("assetId") or p.get("conditionId"))
+                if asset:
+                    held.add(str(asset))
+        except Exception as e:
+            print(f"get_held_token_ids error: {e}")
+        return held
 
     def get_address_for_private_key(self):
         account = self.w3.eth.account.from_key(str(self.private_key))
