@@ -81,10 +81,7 @@ class PolymarketRAG:
         )
         loaded_docs = loader.load()
         embedding_function = OpenAIEmbeddings(model="text-embedding-3-small")
-        vector_db_directory = f"{local_events_directory}/chroma"
-        local_db = Chroma.from_documents(
-            loaded_docs, embedding_function, persist_directory=vector_db_directory
-        )
+        local_db = Chroma.from_documents(loaded_docs, embedding_function)
 
         # query
         return local_db.similarity_search_with_score(query=prompt)
@@ -119,10 +116,7 @@ class PolymarketRAG:
         )
         loaded_docs = loader.load()
         embedding_function = OpenAIEmbeddings(model="text-embedding-3-small")
-        vector_db_directory = f"{local_events_directory}/chroma"
-        local_db = Chroma.from_documents(
-            loaded_docs, embedding_function, persist_directory=vector_db_directory
-        )
+        local_db = Chroma.from_documents(loaded_docs, embedding_function)
 
         # query
         return local_db.similarity_search_with_score(query=prompt)
