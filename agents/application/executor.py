@@ -11,7 +11,7 @@ import math
 MAX_SPREAD = 0.05        # skip markets with bid/ask spread > 5%
 MIN_VOLUME = 500         # skip markets with < $500 lifetime volume (illiquid/dead)
 MIN_DAYS = 1             # skip markets resolving today or already expired
-MAX_DAYS = 60            # skip markets resolving > 60 days out (capital locked too long)
+MAX_DAYS = 30            # skip markets resolving > 30 days out (capital locked too long)
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
