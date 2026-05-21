@@ -6,6 +6,7 @@ import os
 import json
 import re
 import datetime
+import time
 
 # =========================================================================
 # GUARDRAILS CONFIG  -- tune these. All money limits are FRACTIONS of balance.
@@ -17,7 +18,8 @@ MAX_OPEN_POSITIONS = 5     # don't open a new position if this many are already 
 DAILY_SPEND_FRACTION = 0.30  # stop opening trades once 30% of starting daily balance spent
 DAILY_LOSS_FRACTION = 0.15   # stop for the day if balance drops 15% below the day's start
 ABSOLUTE_MIN_TRADE = 1.0   # Polymarket order minimum (~$1). Below this, skip.
-STATE_FILE = "/tmp/trader_daily_state.json"
+TRADE_COOLDOWN_MINUTES = 55  # minimum gap between trades — blocks back-to-back redeploy trades
+STATE_FILE = "trader_daily_state.json"  # project root survives Railway restarts better than /tmp
 # =========================================================================
 
 
@@ -38,7 +40,8 @@ class Trader:
                 return state
         except Exception:
             pass
-        state = {"date": self._today(), "start_balance": current_balance, "spent": 0.0}
+        state = {"date": self._today(), "start_balance": current_balance, "spent": 0.0,
+                 "last_trade_time": None, "traded_tokens": []}
         self._save_state(state)
         return state
 
@@ -150,6 +153,17 @@ class Trader:
             else:
                 print("Open positions: unknown (could not fetch) - proceeding cautiously.")
 
+            last_trade_time = state.get("last_trade_time")
+            if last_trade_time:
+                try:
+                    elapsed = (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(last_trade_time)).total_seconds() / 60
+                    if elapsed < TRADE_COOLDOWN_MINUTES:
+                        print(f"COOLDOWN: last trade was {elapsed:.1f} min ago (need {TRADE_COOLDOWN_MINUTES} min). Skipping.")
+                        return
+                    print(f"Cooldown OK: last trade was {elapsed:.1f} min ago.")
+                except Exception:
+                    pass
+
             events = self.polymarket.get_all_tradeable_events()
             print(f"2. FOUND {len(events)} EVENTS")
             if not events:
@@ -202,6 +216,11 @@ class Trader:
 
             token_id, trade_side = self._resolve_trade(market, prob, price)
 
+            traded_tokens = state.get("traded_tokens", [])
+            if token_id and token_id in traded_tokens:
+                print(f"DEDUP: token {token_id[:20]}... already traded today. Skipping.")
+                return
+
             resp = None
             if token_id:
                 print(f"Placing BUY {trade_side} order, token: {token_id[:20]}...")
@@ -226,6 +245,11 @@ class Trader:
                 success = resp.get("success", True)
             if success:
                 state["spent"] = spent_today + trade_amount
+                state["last_trade_time"] = datetime.datetime.utcnow().isoformat()
+                traded_tokens = state.get("traded_tokens", [])
+                if token_id and token_id not in traded_tokens:
+                    traded_tokens.append(token_id)
+                state["traded_tokens"] = traded_tokens
                 self._save_state(state)
                 print(f"Daily spent now ${state['spent']:.2f} of ${spend_cap:.2f} cap.")
 
