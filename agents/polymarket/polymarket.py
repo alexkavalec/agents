@@ -69,7 +69,7 @@ class Polymarket:
                 api_passphrase=api_passphrase,
             )
         else:
-            # Derive creds from private key (triggers a create attempt first, which logs a 400)
+            # Derive creds from the existing key — skips the create attempt that logs a 400
             l1_client = ClobClient(
                 host=self.clob_url,
                 chain_id=self.chain_id,
@@ -77,7 +77,7 @@ class Polymarket:
                 signature_type=3,
                 funder=funder,
             )
-            creds = l1_client.create_or_derive_api_key()
+            creds = l1_client.derive_api_key()
 
         self.client = ClobClient(
             host=self.clob_url,
