@@ -229,8 +229,22 @@ class Polymarket:
         return resp
 
     def get_usdc_balance(self) -> float:
-        # Polymarket holds tradeable USDC in the FUNDER (deposit/proxy) wallet,
-        # not the raw signing wallet. Check the funder first, fall back to wallet.
+        # PRIMARY: ask the CLOB client for the COLLATERAL (USDC) balance it sees.
+        # This reflects your Polymarket tradeable balance, which a raw on-chain
+        # balanceOf cannot see for deposit/proxy wallets.
+        try:
+            from py_clob_client_v2 import BalanceAllowanceParams, AssetType
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            ba = self.client.get_balance_allowance(params)
+            raw = ba.get("balance") if isinstance(ba, dict) else getattr(ba, "balance", None)
+            if raw is not None:
+                val = float(raw) / 1e6  # USDC has 6 decimals
+                if val > 0:
+                    return val
+        except Exception as e:
+            print(f"CLOB balance read failed ({e}); falling back to on-chain.")
+
+        # FALLBACK: on-chain balanceOf, funder first then signing wallet.
         addresses = []
         funder = os.getenv("POLYGON_FUNDER_ADDRESS")
         if funder:
@@ -242,7 +256,7 @@ class Polymarket:
         for addr in addresses:
             try:
                 bal = self.usdc.functions.balanceOf(addr).call()
-                val = float(bal / 1e6)  # USDC has 6 decimals
+                val = float(bal / 1e6)
                 if val > 0:
                     return val
             except Exception as e:
