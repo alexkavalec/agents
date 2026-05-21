@@ -202,8 +202,17 @@ class Trader:
                 print("No filtered markets, exiting.")
                 return
 
-            market = filtered_markets[0]
-            question = market[0].dict()["metadata"].get("question", "")
+            market = None
+            question = ""
+            for candidate in filtered_markets:
+                q = candidate[0].dict()["metadata"].get("question", "")
+                if q:
+                    market = candidate
+                    question = q
+                    break
+            if market is None:
+                print("No filtered markets have a valid question. Skipping.")
+                return
             print(f"Selected: {question[:80]}")
 
             best_trade = self.agent.source_best_trade(market)
