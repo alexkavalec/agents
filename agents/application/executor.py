@@ -243,19 +243,27 @@ class Executor:
         print("... prompting ... ", prompt)
         print()
         result = self.llm.invoke(prompt)
-        content = result.content
+        superforecaster_content = result.content
 
-        print("result: ", content)
+        print("result: ", superforecaster_content)
         print()
-        prompt = self.prompter.one_best_trade(content, outcomes, outcome_prices)
+        prompt = self.prompter.one_best_trade(superforecaster_content, outcomes, outcome_prices)
         print("... prompting ... ", prompt)
         print()
         result = self.llm.invoke(prompt)
-        content = result.content
+        trade_content = result.content
 
-        print("result: ", content)
+        print("result: ", trade_content)
         print()
-        return content
+
+        # If the LLM omitted price:, inject it from the superforecaster estimate so
+        # the edge check in trade.py always has a probability to compare against.
+        if not re.search(r"price\s*[:=]", trade_content):
+            m = re.search(r"likelihood\s*`?([0-9]*\.?[0-9]+)", superforecaster_content)
+            if m:
+                trade_content = f"price:{m.group(1)}, {trade_content}"
+
+        return trade_content
 
     def format_trade_prompt_for_execution(self, best_trade: str) -> float:
         data = best_trade.split(",")
