@@ -259,6 +259,7 @@ class Trader:
                 return
 
             resp = None
+            order_filled = False
             if token_id:
                 print(f"Placing BUY {trade_side} order, token: {token_id[:20]}...")
                 from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
@@ -268,17 +269,26 @@ class Trader:
                     side=Side.BUY,
                     order_type=OrderType.FOK,
                 )
-                resp = self.polymarket.client.create_and_post_market_order(
-                    order_args=order_args,
-                    options=PartialCreateOrderOptions(tick_size="0.01"),
-                    order_type=OrderType.FOK,
-                )
-                print(f"7. TRADED: {resp}")
+                try:
+                    resp = self.polymarket.client.create_and_post_market_order(
+                        order_args=order_args,
+                        options=PartialCreateOrderOptions(tick_size="0.01"),
+                        order_type=OrderType.FOK,
+                    )
+                    print(f"7. TRADED: {resp}")
+                    order_filled = True
+                except Exception as e:
+                    err = str(e)
+                    if "fully filled" in err or "FOK" in err.upper() or "killed" in err.lower():
+                        print(f"FOK order not filled (insufficient liquidity at this price). Will retry next cycle.")
+                    else:
+                        print(f"Order placement error: {e}")
+                        import traceback; traceback.print_exc()
             else:
                 print("Could not resolve token ID for selected market — skipping trade for safety.")
 
-            success = True
-            if isinstance(resp, dict):
+            success = order_filled
+            if order_filled and isinstance(resp, dict):
                 success = resp.get("success", True)
             if success:
                 state["spent"] = spent_today + trade_amount
