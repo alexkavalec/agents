@@ -82,7 +82,6 @@ class Trader:
         """prob = the bot's chosen price (its probability estimate, first number in
         the trade string). price = the market's current 'Yes' price, read from
         outcome_prices in metadata exactly like executor.source_best_trade does."""
-        import ast
         prob = price = None
         # bot's estimate: FIRST price-like number in the trade text
         try:
@@ -95,9 +94,7 @@ class Trader:
         # market price: from outcome_prices[0] in the market metadata
         try:
             meta = market[0].dict().get("metadata", {})
-            op = meta.get("outcome_prices")
-            if isinstance(op, str):
-                op = ast.literal_eval(op)
+            op = self.agent._safe_parse_list(meta.get("outcome_prices"))
             if op:
                 price = float(op[0])  # 'Yes' price
         except Exception:
