@@ -249,6 +249,7 @@ class Polymarket:
                 data = resp.json()
                 if data:
                     item = data[0]
+                    print(f"Activity API keys: {list(item.keys())}")
                     for field in ("timestamp", "createdAt", "created_at", "t", "time"):
                         ts_raw = item.get(field)
                         if ts_raw is not None:
@@ -257,7 +258,13 @@ class Polymarket:
                                 ts /= 1000  # milliseconds → seconds
                             last_dt = datetime.datetime.utcfromtimestamp(ts)
                             elapsed = (datetime.datetime.utcnow() - last_dt).total_seconds() / 60
+                            print(f"Activity API: last trade {elapsed:.1f} min ago (field={field})")
                             return elapsed
+                    print(f"Activity API: no timestamp field found in {list(item.keys())}")
+                else:
+                    print("Activity API: no trades found (new account or no history)")
+            else:
+                print(f"Activity API HTTP {resp.status_code}")
         except Exception as e:
             print(f"Activity API check failed: {e}")
         return None
@@ -267,7 +274,10 @@ class Polymarket:
         Survives redeploys — reads live Polymarket positions."""
         held = set()
         try:
-            for p in self.get_open_positions():
+            positions = self.get_open_positions()
+            if positions:
+                print(f"Position keys: {list(positions[0].keys())}")
+            for p in positions:
                 asset = (p.get("asset") or p.get("token_id") or
                          p.get("assetId") or p.get("conditionId"))
                 if asset:
