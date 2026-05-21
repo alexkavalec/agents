@@ -265,7 +265,10 @@ class Executor:
         market = market_document["metadata"]
         outcome_prices = self._safe_parse_list(market.get("outcome_prices"))
         outcomes = self._safe_parse_list(market.get("outcomes"))
-        question = market["question"]
+        question = market.get("question", "")
+        if not question:
+            print("  Market metadata missing 'question' — skipping.")
+            return None
         description = market_document["page_content"]
 
         prompt = self.prompter.superforecaster(question, description, outcomes)
