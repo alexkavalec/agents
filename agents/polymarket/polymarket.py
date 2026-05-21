@@ -113,16 +113,28 @@ class Polymarket:
                 return self.map_api_to_market(data[0], token_id)
 
     def map_api_to_market(self, market, token_id: str = "") -> dict:
+        end_date = market.get("endDate", "")
+        days_to_resolution = None
+        if end_date:
+            try:
+                end_dt = datetime.datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                days_to_resolution = (end_dt.replace(tzinfo=None) - datetime.datetime.utcnow()).days
+            except Exception:
+                pass
+
         result = {
             "id": int(market.get("id", 0)),
             "question": market.get("question", ""),
-            "end": market.get("endDate", ""),
+            "end": end_date,
             "description": market.get("description", ""),
             "active": market.get("active", False),
             "funded": market.get("funded", False),
             "rewardsMinSize": float(market.get("rewardsMinSize", 0) or 0),
             "rewardsMaxSpread": float(market.get("rewardsMaxSpread", 0) or 0),
+            "volume": float(market.get("volume", 0) or 0),
+            "liquidity": float(market.get("liquidity", 0) or 0),
             "spread": float(market.get("spread", 0) or 0),
+            "days_to_resolution": days_to_resolution,
             "outcomes": str(market.get("outcomes", "[]")),
             "outcome_prices": str(market.get("outcomePrices", "[]")),
             "clob_token_ids": str(market.get("clobTokenIds", "[]")),
