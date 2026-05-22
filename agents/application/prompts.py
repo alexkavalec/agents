@@ -116,11 +116,23 @@ class Prompter:
         """
         )
 
-    def superforecaster(self, question: str, description: str, outcome: str) -> str:
+    def superforecaster(self, question: str, description: str, outcome: str, lessons: list = None) -> str:
+        lessons_block = ""
+        if lessons:
+            lines = "\n".join(
+                f"  - [{l['date']}] {l['question']} | held {l['side']} @ {l['entry_price']:.2f} "
+                f"| {l['outcome']} ({l['pnl_pct']:+.0%}) — {l['lesson']}"
+                for l in lessons
+            )
+            lessons_block = f"""
+PAST TRADE LESSONS — use these to calibrate your forecast:
+{lines}
+
+"""
         return f"""
         You are a Superforecaster tasked with correctly predicting the likelihood of events.
-        Use the following systematic process to develop an accurate prediction for the following
-        question=`{question}` and description=`{description}` combination. 
+        {lessons_block}Use the following systematic process to develop an accurate prediction for the following
+        question=`{question}` and description=`{description}` combination.
         
         Here are the key steps to use in your analysis:
 

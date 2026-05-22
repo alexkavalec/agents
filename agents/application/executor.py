@@ -317,7 +317,9 @@ class Executor:
             return None
         description = market_document["page_content"]
 
-        prompt = self.prompter.superforecaster(question, description, outcomes)
+        from agents.memory.trade_log import get_recent_lessons
+        lessons = get_recent_lessons(5)
+        prompt = self.prompter.superforecaster(question, description, outcomes, lessons=lessons)
         print()
         print("... prompting ... ", prompt)
         print()
