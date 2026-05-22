@@ -22,6 +22,13 @@ ABSOLUTE_MIN_TRADE = 1.0   # Polymarket order minimum (~$1). Below this, skip.
 TRADE_COOLDOWN_MINUTES = 55  # minimum gap between trades — blocks back-to-back redeploy trades
 STATE_FILE = "trader_daily_state.json"  # project root survives Railway restarts better than /tmp
 
+_CORR_STOP = {
+    "will", "the", "a", "an", "is", "are", "was", "were", "be", "been",
+    "have", "has", "do", "does", "did", "would", "could", "should", "may",
+    "win", "lose", "this", "that", "in", "on", "at", "by", "for", "to",
+    "of", "and", "or", "not", "yes", "no", "its", "their", "2025", "2026", "2027",
+}
+
 # Position management — thresholds before ANY action is even considered.
 # Small moves are completely ignored. AI re-evaluation is always required.
 POSITION_REVIEW_MIN_MOVE    = 0.50   # ignore positions that moved < 50% — that's just noise
@@ -69,6 +76,21 @@ class Trader:
                 shutil.rmtree(d)
             except Exception:
                 pass
+
+    def _extract_keywords(self, text: str) -> set:
+        words = re.findall(r"[a-z0-9]+", text.lower())
+        return {w for w in words if len(w) > 3 and w not in _CORR_STOP}
+
+    def _is_correlated_with_open(self, candidate_q: str, open_questions: list) -> tuple:
+        """Returns (True, matching_question) if candidate shares ≥2 keywords with any open position."""
+        c_kws = self._extract_keywords(candidate_q)
+        for oq in open_questions:
+            if not oq:
+                continue
+            overlap = c_kws & self._extract_keywords(oq)
+            if len(overlap) >= 2:
+                return True, oq
+        return False, None
 
     def _resolve_trade(self, market, prob, market_price):
         """Return (token_id, side_label) for the correct side of the trade.
@@ -203,7 +225,19 @@ class Trader:
                 print("No markets, exiting.")
                 return
 
-            filtered_markets = self.agent.filter_markets(markets)
+            # Collect open position titles for correlation filtering (soft + hard)
+            open_pos_questions = []
+            try:
+                positions_data = self.polymarket.get_open_positions()
+                open_pos_questions = [
+                    p.get("title") or p.get("question", "")
+                    for p in positions_data
+                    if p.get("title") or p.get("question")
+                ]
+            except Exception as e:
+                print(f"Could not fetch open positions for correlation check: {e}")
+
+            filtered_markets = self.agent.filter_markets(markets, open_positions=open_pos_questions)
             print(f"5. AI FILTERED TO {len(filtered_markets)} MARKETS")
             if not filtered_markets:
                 print("No filtered markets, exiting.")
@@ -213,12 +247,17 @@ class Trader:
             question = ""
             for candidate in filtered_markets:
                 q = candidate[0].metadata.get("question", "")
-                if q:
-                    market = candidate
-                    question = q
-                    break
+                if not q:
+                    continue
+                correlated, matching = self._is_correlated_with_open(q, open_pos_questions)
+                if correlated:
+                    print(f"CORRELATION SKIP: '{q[:60]}' overlaps with held '{matching[:60]}'")
+                    continue
+                market = candidate
+                question = q
+                break
             if market is None:
-                print("No filtered markets have a valid question. Skipping.")
+                print("All candidates correlated with open positions or missing question. Skipping.")
                 return
             print(f"Selected: {question[:80]}")
 
