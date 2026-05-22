@@ -257,7 +257,7 @@ class Executor:
         print(f"  {len(markets)} markets with question + usable prices passed all filters")
         return markets
 
-    def filter_markets(self, markets: list) -> "list[tuple]":
+    def filter_markets(self, markets: list, open_positions: list = None) -> "list[tuple]":
         """Rank markets by passing structured data directly to the LLM.
         Bypasses Chroma to avoid metadata loss on retrieval."""
         from langchain_core.documents import Document
@@ -272,11 +272,22 @@ class Executor:
             "outcome_prices": m.get("outcome_prices"),
         } for m in markets], indent=2)
 
+        holdings_block = ""
+        if open_positions:
+            holdings_block = (
+                "\nIMPORTANT — you already hold positions in these markets. "
+                "Do NOT select any market that is economically equivalent "
+                "(e.g. the other side of the same event, or the same event with a different team):\n"
+                + "".join(f"  - {q}\n" for q in open_positions if q)
+                + "\n"
+            )
+
         messages = [
             SystemMessage(content=prompt),
             HumanMessage(content=(
                 f"Markets:\n{slim}\n\n"
-                "Return ONLY a JSON array of the top 4 market IDs ranked best first. "
+                + holdings_block
+                + "Return ONLY a JSON array of the top 4 market IDs ranked best first. "
                 "Example: [12345, 67890]"
             )),
         ]
