@@ -5,6 +5,8 @@ and returns a formatted block injected into the superforecaster prompt.
 Sources:
   - NewsAPI          (requires NEWS_API_KEY env var)
   - Twitter/X        (requires TWITTER_BEARER_TOKEN env var)
+  - Tavily           (requires TAVILY_API_KEY env var — real-time web search)
+  - ESPN             (unofficial API, no key needed — live sports scores/standings)
   - Reddit           (public JSON API, no key needed)
   - Wikipedia        (public REST API, no key needed)
   - Metaculus        (public API, no key needed)
@@ -38,9 +40,29 @@ def _extract_keywords(question: str, max_words: int = 5) -> str:
 
 
 class DataEnricher:
+    # ESPN league slugs keyed by sport keywords
+    ESPN_LEAGUES = {
+        "champions league": "soccer/uefa.champions",
+        "ucl": "soccer/uefa.champions",
+        "uefa": "soccer/uefa.champions",
+        "premier league": "soccer/eng.1",
+        "la liga": "soccer/esp.1",
+        "bundesliga": "soccer/ger.1",
+        "serie a": "soccer/ita.1",
+        "ligue 1": "soccer/fra.1",
+        "nba": "basketball/nba",
+        "nfl": "football/nfl",
+        "super bowl": "football/nfl",
+        "mlb": "baseball/mlb",
+        "nhl": "hockey/nhl",
+        "world cup": "soccer/fifa.world",
+        "euro": "soccer/uefa.euro",
+    }
+
     def __init__(self):
         self.news_api_key = os.getenv("NEWS_API_KEY") or os.getenv("NEWSAPI_API_KEY")
         self.twitter_bearer = os.getenv("TWITTER_BEARER_TOKEN")
+        self.tavily_key = os.getenv("TAVILY_API_KEY")
 
     # ------------------------------------------------------------------
     # NewsAPI
@@ -232,6 +254,87 @@ class DataEnricher:
             return []
 
     # ------------------------------------------------------------------
+    # Tavily — real-time AI web search (requires TAVILY_API_KEY)
+    # ------------------------------------------------------------------
+
+    def _get_tavily(self, question: str, max_results: int = 5) -> list:
+        if not self.tavily_key:
+            return []
+        try:
+            from tavily import TavilyClient
+            client = TavilyClient(api_key=self.tavily_key)
+            resp = client.search(question, max_results=max_results, search_depth="basic")
+            results = resp.get("results", [])
+            return [
+                {
+                    "source": "Tavily",
+                    "title": r.get("title", ""),
+                    "snippet": (r.get("content") or "")[:250],
+                    "url": r.get("url", ""),
+                    "score": round(r.get("score", 0), 2),
+                }
+                for r in results if r.get("title")
+            ]
+        except Exception as e:
+            print(f"  [DataEnricher] Tavily error: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    # ESPN unofficial API — live sports scores, standings, injuries
+    # ------------------------------------------------------------------
+
+    def _detect_espn_league(self, question: str) -> str:
+        q = question.lower()
+        for keyword, league in self.ESPN_LEAGUES.items():
+            if keyword in q:
+                return league
+        return ""
+
+    def _get_espn(self, question: str) -> dict:
+        league = self._detect_espn_league(question)
+        if not league:
+            return {}
+        try:
+            sport, slug = league.split("/", 1)
+            base = f"http://site.api.espn.com/apis/site/v2/sports/{league}"
+
+            # Scoreboard — live/recent games
+            sb_resp = requests.get(f"{base}/scoreboard", timeout=8)
+            games = []
+            if sb_resp.status_code == 200:
+                events = sb_resp.json().get("events", [])
+                for e in events[:5]:
+                    comps = e.get("competitions", [{}])[0]
+                    competitors = comps.get("competitors", [])
+                    if len(competitors) >= 2:
+                        home = competitors[0]
+                        away = competitors[1]
+                        status = e.get("status", {}).get("type", {}).get("description", "")
+                        games.append({
+                            "home": home.get("team", {}).get("displayName", ""),
+                            "home_score": home.get("score", ""),
+                            "away": away.get("team", {}).get("displayName", ""),
+                            "away_score": away.get("score", ""),
+                            "status": status,
+                            "date": e.get("date", "")[:10],
+                        })
+
+            # Standings
+            standings = []
+            st_resp = requests.get(f"{base}/standings", timeout=8)
+            if st_resp.status_code == 200:
+                entries = st_resp.json().get("standings", {}).get("entries", [])
+                for entry in entries[:8]:
+                    team = entry.get("team", {}).get("displayName", "")
+                    stats = {s["name"]: s.get("displayValue", "") for s in entry.get("stats", [])}
+                    standings.append({"team": team, "stats": stats})
+
+            return {"league": league, "games": games, "standings": standings}
+        except Exception as e:
+            print(f"  [DataEnricher] ESPN error: {e}")
+            return {}
+
+    # ------------------------------------------------------------------
     # Google Trends (pytrends — may be blocked on cloud IPs)
     # ------------------------------------------------------------------
 
@@ -271,20 +374,46 @@ class DataEnricher:
 
         print(f"  [DataEnricher] Fetching live context for: {keywords!r}")
 
-        news       = self._get_news(keywords)
-        tweets     = self._get_tweets(keywords)
-        reddit     = self._get_reddit(keywords)
-        wiki       = self._get_wikipedia_pageviews(keywords)
-        metaculus  = self._get_metaculus(keywords)
-        trends     = self._get_google_trends(keywords)
+        tavily    = self._get_tavily(question)       # full question for best results
+        espn      = self._get_espn(question)
+        news      = self._get_news(keywords)
+        tweets    = self._get_tweets(keywords)
+        reddit    = self._get_reddit(keywords)
+        wiki      = self._get_wikipedia_pageviews(keywords)
+        metaculus = self._get_metaculus(keywords)
+        trends    = self._get_google_trends(keywords)
 
-        if not any([news, tweets, reddit, wiki, metaculus, trends]):
+        if not any([tavily, espn, news, tweets, reddit, wiki, metaculus, trends]):
             return ""
 
         lines = ["LIVE CONTEXT (fetched now — use this to update your forecast):"]
 
+        # Tavily first — highest-quality real-time answer
+        if tavily:
+            lines.append(f"\nWeb search results ({len(tavily)}):")
+            for r in tavily:
+                lines.append(f"  [{r['score']}] {r['title']}")
+                if r["snippet"]:
+                    lines.append(f"    {r['snippet']}")
+
+        # ESPN sports data
+        if espn:
+            lines.append(f"\nESPN — {espn['league']}:")
+            if espn.get("games"):
+                lines.append("  Recent/live games:")
+                for g in espn["games"]:
+                    lines.append(
+                        f"    {g['away']} {g['away_score']} @ {g['home']} {g['home_score']}"
+                        f"  [{g['status']}  {g['date']}]"
+                    )
+            if espn.get("standings"):
+                lines.append("  Current standings (top 8):")
+                for s in espn["standings"]:
+                    stat_str = "  ".join(f"{k}:{v}" for k, v in list(s["stats"].items())[:3])
+                    lines.append(f"    {s['team']}: {stat_str}")
+
         if trends:
-            trend_note = " 🔥 TRENDING" if trends.get("trending") else ""
+            trend_note = " TRENDING" if trends.get("trending") else ""
             lines.append(
                 f"\nGoogle Trends (last 7d): interest={trends['current_interest']}/100 "
                 f"(avg {trends['avg_interest_7d']}, peak {trends['peak_interest_7d']}){trend_note}"
