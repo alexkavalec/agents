@@ -116,7 +116,8 @@ class Prompter:
         """
         )
 
-    def superforecaster(self, question: str, description: str, outcome: str, lessons: list = None) -> str:
+    def superforecaster(self, question: str, description: str, outcome: str,
+                        lessons: list = None, live_context: str = "") -> str:
         lessons_block = ""
         if lessons:
             lines = "\n".join(
@@ -129,9 +130,11 @@ PAST TRADE LESSONS — use these to calibrate your forecast:
 {lines}
 
 """
+        context_block = f"\n{live_context}\n" if live_context else ""
+
         return f"""
         You are a Superforecaster tasked with correctly predicting the likelihood of events.
-        {lessons_block}Use the following systematic process to develop an accurate prediction for the following
+        {lessons_block}{context_block}Use the following systematic process to develop an accurate prediction for the following
         question=`{question}` and description=`{description}` combination.
         
         Here are the key steps to use in your analysis:

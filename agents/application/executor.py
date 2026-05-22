@@ -318,8 +318,11 @@ class Executor:
         description = market_document["page_content"]
 
         from agents.memory.trade_log import get_recent_lessons
+        from agents.connectors.data_enricher import DataEnricher
         lessons = get_recent_lessons(5)
-        prompt = self.prompter.superforecaster(question, description, outcomes, lessons=lessons)
+        live_context = DataEnricher().get_context(question)
+        prompt = self.prompter.superforecaster(question, description, outcomes,
+                                               lessons=lessons, live_context=live_context)
         print()
         print("... prompting ... ", prompt)
         print()
