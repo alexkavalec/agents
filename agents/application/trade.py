@@ -1,6 +1,7 @@
 from agents.application.executor import Executor as Agent
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
+from agents.memory.trade_log import log_trade, log_lesson, get_recent_lessons
 import shutil
 import os
 import json
@@ -136,6 +137,12 @@ class Trader:
                 print(f"Could not read balance ({e}); aborting this run for safety.")
                 return
             print(f"Balance: ${balance:.2f}")
+
+            from agents.memory.trade_log import get_stats
+            stats = get_stats()
+            print(f"Memory: {stats['total_attempts']} trade attempts | "
+                  f"{stats['filled']} filled | {stats['fok_killed']} FOK killed | "
+                  f"{stats['closed_profit']} profit exits | {stats['closed_loss']} loss exits")
 
             self.maintain_positions()
 
@@ -277,13 +284,19 @@ class Trader:
                     )
                     print(f"7. TRADED: {resp}")
                     order_filled = True
+                    log_trade(question, token_id, trade_side, prob, price, edge,
+                              trade_amount, "filled")
                 except Exception as e:
                     err = str(e)
                     if "fully filled" in err or "FOK" in err.upper() or "killed" in err.lower():
                         print(f"FOK order not filled (insufficient liquidity at this price). Will retry next cycle.")
+                        log_trade(question, token_id, trade_side, prob, price, edge,
+                                  trade_amount, "fok_killed")
                     else:
                         print(f"Order placement error: {e}")
                         import traceback; traceback.print_exc()
+                        log_trade(question, token_id, trade_side, prob, price, edge,
+                                  trade_amount, "error")
             else:
                 print("Could not resolve token ID for selected market — skipping trade for safety.")
 
@@ -319,7 +332,7 @@ class Trader:
             print(f"  Re-eval error: {e}")
         return None
 
-    def _close_position(self, token_id: str, size: float, reason: str) -> None:
+    def _close_position(self, token_id: str, size: float, reason: str, lesson_ctx: dict = None) -> None:
         """Sell the entire position via a market SELL order."""
         try:
             from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
@@ -335,6 +348,21 @@ class Trader:
                 order_type=OrderType.FOK,
             )
             print(f"  {reason} executed: {resp}")
+            if lesson_ctx:
+                outcome = "closed_profit" if lesson_ctx.get("pnl_pct", 0) > 0 else "closed_loss"
+                lesson = (
+                    f"{reason} after {lesson_ctx.get('pnl_pct', 0):+.1%} move. "
+                    f"Held {lesson_ctx.get('side', '?')} at entry price {lesson_ctx.get('entry_price', 0):.3f}. "
+                    f"AI edge had collapsed — thesis confirmed broken."
+                )
+                log_lesson(
+                    question=lesson_ctx.get("question", ""),
+                    side=lesson_ctx.get("side", ""),
+                    entry_price=lesson_ctx.get("entry_price", 0),
+                    pnl_pct=lesson_ctx.get("pnl_pct", 0),
+                    outcome=outcome,
+                    lesson=lesson,
+                )
         except Exception as e:
             print(f"  {reason} sell failed: {e}")
 
@@ -410,12 +438,18 @@ class Trader:
                     continue
 
                 # Both gates passed: price moved hard AND AI confirms thesis is broken
+                lesson_ctx = {
+                    "question": question,
+                    "side": outcome,
+                    "entry_price": avg_price,
+                    "pnl_pct": pnl_pct,
+                }
                 if pnl_pct >= POSITION_TAKE_PROFIT_GAIN:
                     print(f"  TAKE PROFIT: up {pnl_pct:+.1%}, AI edge = {current_edge:+.2f} (closed)")
-                    self._close_position(asset, size, "TAKE PROFIT")
+                    self._close_position(asset, size, "TAKE PROFIT", lesson_ctx)
                 elif pnl_pct <= POSITION_STOP_LOSS_LOSS:
                     print(f"  STOP LOSS: down {pnl_pct:+.1%}, AI confirms thesis broken (edge = {current_edge:+.2f})")
-                    self._close_position(asset, size, "STOP LOSS")
+                    self._close_position(asset, size, "STOP LOSS", lesson_ctx)
 
         except Exception as e:
             print(f"maintain_positions error: {e}")
