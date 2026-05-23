@@ -313,7 +313,7 @@ class Trader:
             if trade_amount < ABSOLUTE_MIN_TRADE:
                 print(f"Trade size ${trade_amount:.2f} below minimum ${ABSOLUTE_MIN_TRADE}. Skipping.")
                 return
-            print(f"Trade amount: ${trade_amount:.2f} (max/trade ${max_trade:.2f}, daily room ${remaining_daily:.2f})")
+            print(f"Trade amount: ${trade_amount:.2f} (cap ${size_cap:.2f}, daily room ${remaining_daily:.2f})")
 
             token_id, trade_side = self._resolve_trade(market, prob, price)
 
