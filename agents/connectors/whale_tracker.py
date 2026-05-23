@@ -17,9 +17,9 @@ from collections import defaultdict
 DATA_API = "https://data-api.polymarket.com"
 
 # Leaderboard quality filters — only follow consistently profitable traders
-MIN_WHALE_PROFIT = 5_000    # $5k+ realised profit (not just lucky)
-MIN_WHALE_ROI    = 0.05     # 5%+ ROI — filters out high-volume breakeven traders
-MIN_WHALE_TRADES = 20       # at least 20 trades — not a one-shot wonder
+MIN_WHALE_PROFIT = 1_000    # $1k+ realised profit
+MIN_WHALE_ROI    = 0.03     # 3%+ ROI — filters out breakeven traders
+MIN_WHALE_TRADES = 10       # at least 10 trades — not a one-shot wonder
 
 # Price drift cap — if the market already priced in the whale's information, skip
 # 0.40 = price moved 40% from whale's avg entry; beyond this we're chasing
@@ -45,39 +45,95 @@ def _req(url: str, params: dict = None) -> object:
     return None
 
 
-class WhaleTracker:
+    def _parse_trader(self, t: dict) -> dict | None:
+        """Extract address/profit/roi/trades from a leaderboard entry, tolerating
+        all the field-name variants Polymarket has used across API versions."""
+        address = (
+            t.get("proxyWalletAddress")
+            or t.get("proxy_wallet_address")
+            or t.get("address")
+            or t.get("user")
+            or t.get("name", "")
+        )
+        if not address:
+            return None
+
+        # profit — several names, sometimes in cents (>1000 reasonable threshold)
+        profit = float(
+            t.get("profit")
+            or t.get("pnl")
+            or t.get("pnlTotal")
+            or t.get("profitAndLoss")
+            or t.get("totalPnl")
+            or t.get("realizedPnl")
+            or 0
+        )
+
+        # ROI — might be 0.35 (fraction) or 35.0 (percent)
+        roi_raw = float(
+            t.get("roi")
+            or t.get("ROI")
+            or t.get("returnOnInvestment")
+            or 0
+        )
+        roi = roi_raw if roi_raw <= 1.0 else roi_raw / 100.0
+
+        # trade count
+        trades = int(
+            t.get("numTrades")
+            or t.get("num_trades")
+            or t.get("tradesCount")
+            or t.get("trades_count")
+            or t.get("numberOfTrades")
+            or 0
+        )
+
+        return {"address": address, "profit": profit, "roi": roi, "trades": trades}
 
     def get_top_traders(self, n: int = 30) -> list:
         """
         Fetch the top n traders from the Polymarket leaderboard.
-        Filters by minimum profit, ROI, and trade count so we follow
-        skilled traders, not one-time lucky bettors.
+        Tries multiple endpoint + window combinations; logs first raw result
+        so we can debug field names if needed.
         """
-        for window in ("1M", "all"):
-            data = _req(f"{DATA_API}/rankings", {"window": window, "limit": n})
+        endpoints = [
+            (f"{DATA_API}/rankings",    {"window": "1M",  "limit": n}),
+            (f"{DATA_API}/rankings",    {"window": "all", "limit": n}),
+            (f"{DATA_API}/leaderboard", {"window": "1M",  "limit": n}),
+            (f"{DATA_API}/leaderboard", {"limit": n}),
+        ]
+
+        for url, params in endpoints:
+            data = _req(url, params)
             if not isinstance(data, list) or not data:
                 continue
+
+            # Debug: log field names of first entry so we can fix mismatches
+            print(f"  [WhaleTracker] API hit: {url} — first entry keys: {list(data[0].keys())[:8]}")
+
             traders = []
             for t in data:
-                profit  = float(t.get("profit", 0) or 0)
-                roi     = float(t.get("roi", 0) or 0)
-                trades  = int(t.get("numTrades", t.get("num_trades", 0)) or 0)
-                address = (
-                    t.get("proxyWalletAddress")
-                    or t.get("address")
-                    or t.get("user", "")
-                )
-                if not address:
+                parsed = self._parse_trader(t)
+                if parsed is None:
                     continue
-                if profit >= MIN_WHALE_PROFIT and roi >= MIN_WHALE_ROI and trades >= MIN_WHALE_TRADES:
-                    traders.append({
-                        "address": address,
-                        "profit":  profit,
-                        "roi":     roi,
-                        "trades":  trades,
-                    })
+                if (parsed["profit"] >= MIN_WHALE_PROFIT
+                        and parsed["roi"] >= MIN_WHALE_ROI
+                        and parsed["trades"] >= MIN_WHALE_TRADES):
+                    traders.append(parsed)
+
             if traders:
+                print(f"  [WhaleTracker] {len(traders)} qualified traders from {url}")
                 return traders[:n]
+
+            # API responded but no one passed filters — log why
+            if data:
+                sample = self._parse_trader(data[0]) or {}
+                print(
+                    f"  [WhaleTracker] {url} returned {len(data)} entries but none passed filters. "
+                    f"Sample: profit={sample.get('profit',0):.0f} roi={sample.get('roi',0):.3f} "
+                    f"trades={sample.get('trades',0)}"
+                )
+
         return []
 
     def get_positions(self, address: str) -> list:
