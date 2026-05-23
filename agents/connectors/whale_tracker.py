@@ -88,6 +88,7 @@ class WhaleTracker:
             return []
 
         volume_by_wallet: dict = defaultdict(float)
+        name_by_wallet:   dict = {}
         for trade in data:
             wallet = trade.get("proxyWallet", "")
             if not wallet:
@@ -97,16 +98,23 @@ class WhaleTracker:
             except (TypeError, ValueError):
                 continue
             volume_by_wallet[wallet] += dollar_vol
+            if wallet not in name_by_wallet:
+                name = trade.get("pseudonym") or trade.get("name") or ""
+                name_by_wallet[wallet] = name
 
         traders = [
-            {"address": addr, "volume": vol}
+            {"address": addr, "volume": vol, "name": name_by_wallet.get(addr, "")}
             for addr, vol in volume_by_wallet.items()
             if vol >= MIN_WHALE_VOLUME
         ]
         traders.sort(key=lambda t: t["volume"], reverse=True)
 
         if traders:
-            print(f"  [WhaleTracker] {len(traders)} active traders found in recent trade feed (using top {min(n, len(traders))})")
+            top = traders[:n]
+            print(f"  [WhaleTracker] {len(traders)} active traders found, top {len(top)}:")
+            for t in top[:10]:
+                label = t["name"] or t["address"][:10] + "..."
+                print(f"    ${t['volume']:>7,.0f} vol — {label}")
         return traders[:n]
 
     def get_positions(self, address: str) -> list:

@@ -714,7 +714,12 @@ class DataEnricher:
         try:
             from tavily import TavilyClient
             client = TavilyClient(api_key=self.tavily_key)
-            resp = client.search(question, max_results=max_results, search_depth="basic")
+            resp = client.search(
+                question,
+                max_results=max_results,
+                search_depth="basic",
+                exclude_domains=["polymarket.com", "poly.market"],
+            )
             return [
                 {
                     "title": r.get("title", ""),
@@ -991,7 +996,7 @@ class DataEnricher:
         manifold   = self._get_manifold(keywords)
         tavily     = self._get_tavily(question)
         espn       = self._get_espn(question)
-        news       = self._get_news(keywords)
+        news       = self._get_news(question)
         tweets     = self._get_tweets(keywords)
         reddit     = self._get_reddit(keywords)
         wiki       = self._get_wikipedia_pageviews(keywords)
