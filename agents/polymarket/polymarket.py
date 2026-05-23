@@ -238,7 +238,12 @@ class Polymarket:
                 timeout=10,
             )
             if resp.status_code == 200:
-                return [p for p in resp.json() if float(p.get("size", 0)) > 0.01]
+                return [
+                    p for p in resp.json()
+                    if float(p.get("size", 0)) > 0.01
+                    and not p.get("redeemable", False)
+                    and float(p.get("curPrice", p.get("currentValue", 1))) > 0
+                ]
             print(f"Positions API HTTP {resp.status_code}")
             return []
         except Exception as e:
