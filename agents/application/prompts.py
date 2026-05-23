@@ -163,37 +163,32 @@ PAST TRADE LESSONS — use these to calibrate your forecast:
         context_block = f"\n{live_context}\n" if live_context else ""
 
         return f"""
-        You are a Superforecaster tasked with correctly predicting the likelihood of events.
-        {lessons_block}{context_block}Use the following systematic process to develop an accurate prediction for the following
-        question=`{question}` and description=`{description}` combination.
-        
-        Here are the key steps to use in your analysis:
+You are a world-class Superforecaster. Your job is to produce the most accurate possible
+probability estimate for a prediction market question.
 
-        1. Breaking Down the Question:
-            - Decompose the question into smaller, more manageable parts.
-            - Identify the key components that need to be addressed to answer the question.
-        2. Gathering Information:
-            - Seek out diverse sources of information.
-            - Look for both quantitative data and qualitative insights.
-            - Stay updated on relevant news and expert analyses.
-        3. Considere Base Rates:
-            - Use statistical baselines or historical averages as a starting point.
-            - Compare the current situation to similar past events to establish a benchmark probability.
-        4. Identify and Evaluate Factors:
-            - List factors that could influence the outcome.
-            - Assess the impact of each factor, considering both positive and negative influences.
-            - Use evidence to weigh these factors, avoiding over-reliance on any single piece of information.
-        5. Think Probabilistically:
-            - Express predictions in terms of probabilities rather than certainties.
-            - Assign likelihoods to different outcomes and avoid binary thinking.
-            - Embrace uncertainty and recognize that all forecasts are probabilistic in nature.
-        
-        Given these steps produce a statement on the probability of outcome=`{outcome}` occuring.
+{lessons_block}{context_block}QUESTION: {question}
+DESCRIPTION: {description}
+OUTCOME TO EVALUATE: {outcome}
 
-        Give your response in the following format:
+Follow these steps:
 
-        I believe {question} has a likelihood `{float}` for outcome of `{str}`.
-        """
+1. ANCHOR: If the live context above contains bookmaker odds, Metaculus, Manifold, or Kalshi
+   prices, start there. Do NOT diverge more than 10 percentage points without a concrete reason.
+
+2. BASE RATE: What is the historical frequency of this type of event?
+
+3. CURRENT EVIDENCE: What specific facts, news, or data push the probability up or down?
+
+4. SYNTHESISE: Combine anchor + base rate + current evidence into a single probability (0.0–1.0).
+
+5. CONFIDENCE — rate how certain you are:
+   - HIGH: multiple independent sources agree, clear signal, you understand the situation well
+   - MEDIUM: some evidence but meaningful uncertainty remains
+   - LOW: mostly base rates, contradictory signals, or very limited information
+
+Respond in EXACTLY this format and nothing else after it:
+I believe [question] has a likelihood `0.65` for outcome of `Yes`. Confidence: HIGH.
+"""
 
     def one_best_trade(
         self,
@@ -219,23 +214,21 @@ PAST TRADE LESSONS — use these to calibrate your forecast:
 
         The current outcomes ${outcomes} prices are: ${outcome_prices}
 
-        Given your prediction, respond with a genius trade in the format:
-        `
-            price:'price_on_the_orderbook',
-            size:'percentage_of_total_funds',
-            side: BUY or SELL,
-        `
+        Based on your prediction, output ONE trade. Rules:
+        - price: use the likelihood from your prediction as the price
+        - size: fraction of total funds (0.05 to 0.20)
+        - side: BUY or SELL
+        - confidence: copy the confidence level (HIGH / MEDIUM / LOW) from your prediction
 
-        Your trade should approximate price using the likelihood in your prediction.
-
-        Example response:
+        Respond in EXACTLY this format:
 
         RESPONSE```
             price:0.5,
             size:0.1,
             side:BUY,
+            confidence:HIGH,
         ```
-        
+
         """
         )
 
