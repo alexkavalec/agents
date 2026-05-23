@@ -385,7 +385,8 @@ class Executor:
         lessons = get_recent_lessons(5)
         live_context = DataEnricher().get_context(question)
         prompt = self.prompter.superforecaster(question, description, outcomes,
-                                               lessons=lessons, live_context=live_context)
+                                               lessons=lessons, live_context=live_context,
+                                               market_prices=outcome_prices)
         print()
         print("... prompting ... ", prompt)
         print()
