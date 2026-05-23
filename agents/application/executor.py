@@ -275,6 +275,15 @@ class Executor:
                 return False, f"resolves in {days}d (too soon)"
             if days > MAX_DAYS:
                 return False, f"resolves in {days}d > {MAX_DAYS}d limit"
+        # Skip markets where any outcome token is below CLOB minimum price (0.01)
+        # — these are near-certain markets with no real edge and orders will be rejected
+        op = self._safe_parse_list(m.get("outcome_prices"))
+        if op:
+            try:
+                if any(float(p) < 0.01 or float(p) > 0.99 for p in op):
+                    return False, f"token price out of CLOB range [0.01, 0.99]"
+            except (ValueError, TypeError):
+                pass
         return True, ""
 
     def map_filtered_events_to_markets(

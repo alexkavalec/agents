@@ -49,7 +49,8 @@ def _req(url: str, params: dict = None) -> object:
 
 
 def _categorise(holder: dict, yes_list: list, no_list: list) -> None:
-    """Sort a holder dict into YES or NO bucket based on outcomeIndex or outcome field."""
+    """Sort a holder dict into YES or NO bucket based on outcomeIndex or outcome field.
+    Stores dollar value (amount × price) so near-zero-price tokens don't skew counts."""
     try:
         amount = float(holder.get("amount", 0) or 0)
     except (TypeError, ValueError):
@@ -57,13 +58,21 @@ def _categorise(holder: dict, yes_list: list, no_list: list) -> None:
     if amount < 1.0:
         return
 
+    # Weight by current token price so cheap YES/NO tokens don't inflate counts
+    try:
+        price = float(holder.get("price", 0) or holder.get("currentPrice", 0) or 0)
+    except (TypeError, ValueError):
+        price = 0.0
+    # If price unavailable, use raw token count (degrades gracefully)
+    dollar_value = amount * price if price > 0 else amount
+
     outcome_idx = holder.get("outcomeIndex")
     outcome_str = (holder.get("outcome") or "").upper()
 
     if outcome_idx == 0 or outcome_str in ("YES", "0"):
-        yes_list.append({"proxyWallet": holder.get("proxyWallet", ""), "amount": amount})
+        yes_list.append({"proxyWallet": holder.get("proxyWallet", ""), "amount": dollar_value})
     elif outcome_idx == 1 or outcome_str in ("NO", "1"):
-        no_list.append({"proxyWallet": holder.get("proxyWallet", ""), "amount": amount})
+        no_list.append({"proxyWallet": holder.get("proxyWallet", ""), "amount": dollar_value})
 
 
 class WhaleTracker:
@@ -238,18 +247,18 @@ class WhaleTracker:
         if yes_holders:
             lines.append(
                 f"  YES side: {len(yes_holders)} large holders, "
-                f"{yes_total:,.0f} tokens held"
+                f"~${yes_total:,.0f} in position value"
             )
         if no_holders:
             lines.append(
                 f"  NO side:  {len(no_holders)} large holders, "
-                f"{no_total:,.0f} tokens held"
+                f"~${no_total:,.0f} in position value"
             )
 
         dominant = "YES" if yes_total >= no_total else "NO"
         lines.append(
             f"  → Holder concentration leans {dominant} "
-            f"({yes_total / grand * 100:.0f}% YES / {no_total / grand * 100:.0f}% NO by tokens)"
+            f"({yes_total / grand * 100:.0f}% YES / {no_total / grand * 100:.0f}% NO by $ value)"
         )
         lines.append(
             "  Treat this as a secondary calibration signal — concentrated large holders"
