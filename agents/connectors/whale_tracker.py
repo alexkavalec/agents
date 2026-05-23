@@ -47,7 +47,7 @@ def _req(url: str, params: dict = None) -> object:
 
 class WhaleTracker:
 
-    def _parse_trader(self, t: dict) -> dict | None:
+    def _parse_trader(self, t: dict):
         """Extract address/profit/roi/trades from a leaderboard entry, tolerating
         all the field-name variants Polymarket has used across API versions."""
         address = (
