@@ -11,7 +11,7 @@ import math
 MAX_SPREAD = 0.05        # skip markets with bid/ask spread > 5%
 MIN_VOLUME = 500         # skip markets with < $500 lifetime volume (illiquid/dead)
 MIN_DAYS = 1             # skip markets resolving today or already expired
-MAX_DAYS = 30            # skip markets resolving > 30 days out (capital locked too long)
+MAX_DAYS = 40            # skip markets resolving > 40 days out (capital locked too long)
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -136,12 +136,64 @@ class Executor:
         result = self.llm.invoke(prompt)
         return result.content
 
-    def filter_events_with_rag(self, events: "list[SimpleEvent]") -> str:
-        prompt = self.prompter.filter_events()
-        print()
-        print("... prompting ... ", prompt)
-        print()
-        return self.chroma.events(events, prompt)
+    def filter_events_with_rag(self, events: "list[SimpleEvent]") -> list:
+        """Select diverse tradeable events via direct LLM call.
+        Replaces Chroma RAG which returned only 4 results with a sports bias."""
+        from langchain_core.documents import Document
+
+        summaries = []
+        for i, e in enumerate(events):
+            try:
+                d = e.dict() if hasattr(e, "dict") else {}
+                summaries.append({
+                    "index": i,
+                    "title": d.get("title", ""),
+                    "description": (d.get("description") or "")[:200],
+                })
+            except Exception:
+                summaries.append({"index": i, "title": "", "description": ""})
+
+        slim = json.dumps(summaries, indent=2)
+        prompt = self.prompter.filter_events_diverse()
+        messages = [
+            SystemMessage(content=prompt),
+            HumanMessage(content=(
+                f"Events:\n{slim}\n\n"
+                "Return ONLY a JSON array of the top 10 event indexes, diverse across "
+                "categories (max 2 from the same category). "
+                "Example: [3, 12, 7, 22, 5, 8, 14, 2, 19, 0]"
+            )),
+        ]
+        result = self.llm.invoke(messages)
+
+        selected_indexes = []
+        try:
+            idxs_raw = re.search(r'\[[\d,\s]+\]', result.content)
+            if idxs_raw:
+                selected_indexes = json.loads(idxs_raw.group(0))
+        except Exception:
+            pass
+
+        if not selected_indexes:
+            selected_indexes = list(range(min(10, len(events))))
+
+        selected = []
+        for idx in selected_indexes[:10]:
+            if 0 <= idx < len(events):
+                e = events[idx]
+                try:
+                    d = e.dict() if hasattr(e, "dict") else {}
+                    doc = Document(
+                        page_content=d.get("description", "") or d.get("title", ""),
+                        metadata={
+                            "id": d.get("id", ""),
+                            "markets": d.get("markets", ""),
+                        },
+                    )
+                    selected.append((doc, 1.0))
+                except Exception:
+                    pass
+        return selected
 
     def _safe_parse_list(self, value) -> list:
         """Robustly convert any Gamma/Chroma price/id field to a Python list."""

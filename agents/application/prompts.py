@@ -92,9 +92,39 @@ class Prompter:
     def filter_events(self) -> str:
         return (
             self.polymarket_analyst_api()
-            + f"""
-        
+            + """
+
         Filter these events for the ones you will be best at trading on profitably.
+
+        """
+        )
+
+    def filter_events_diverse(self) -> str:
+        return (
+            self.polymarket_analyst_api()
+            + """
+
+        Select the TOP 10 prediction market events that offer the best trading opportunities.
+
+        CRITICAL RULE: Select events from AT LEAST 4 different categories.
+        Do NOT pick more than 2 events from any single category (e.g. max 2 sports).
+
+        Categories to spread across:
+        - Politics & elections
+        - Crypto & finance (BTC price, ETH, stablecoins, DeFi)
+        - Sports (max 2 — only if different sports or competitions)
+        - Science & technology
+        - Entertainment & culture
+        - Economics & business (Fed rates, GDP, inflation, earnings)
+        - Geopolitics & world events
+
+        Prioritise events where:
+        - The outcome is researchable and predictable with a real edge
+        - There is genuine uncertainty (market not already near 0 or 1)
+        - Reliable public information exists to form a view
+        - The event will resolve within the next 40 days
+
+        Deprioritise: vague long-shots, obscure local events, near-certainty markets.
 
         """
         )
@@ -107,7 +137,7 @@ class Prompter:
         Filter these markets for the best trading opportunities. Prioritize markets where:
         - The spread is tight (< 0.03 ideal) — wide spreads eat into profit
         - Volume is high (> $5000) — liquid markets have better fills
-        - Days to resolution is 7–30 days — short enough to free capital, long enough to trade
+        - Days to resolution is 7–40 days — short enough to free capital, long enough to trade
         - The current price implies meaningful uncertainty (not already near 0 or 1)
         - The outcome is something that can be researched and predicted with an edge
 
