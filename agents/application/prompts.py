@@ -147,7 +147,8 @@ class Prompter:
         )
 
     def superforecaster(self, question: str, description: str, outcome: str,
-                        lessons: list = None, live_context: str = "") -> str:
+                        lessons: list = None, live_context: str = "",
+                        market_prices=None) -> str:
         lessons_block = ""
         if lessons:
             lines = "\n".join(
@@ -160,24 +161,50 @@ PAST TRADE LESSONS — use these to calibrate your forecast:
 {lines}
 
 """
+        # Build a hard anchor block from live Polymarket prices — always shown first.
+        prices_block = ""
+        if market_prices:
+            try:
+                prices = [float(p) for p in market_prices]
+                # Assume binary market: index 0 = YES, index 1 = NO
+                if len(prices) >= 2:
+                    prices_block = (
+                        f"CURRENT POLYMARKET PRICES (live consensus — treat as your prior):\n"
+                        f"  YES = {prices[0]:.2%}   NO = {prices[1]:.2%}\n"
+                        f"  Your estimate MUST stay within 15 percentage points of these prices\n"
+                        f"  unless you have strong, specific, recent evidence to justify diverging.\n\n"
+                    )
+                elif len(prices) == 1:
+                    prices_block = (
+                        f"CURRENT POLYMARKET PRICE (live consensus — treat as your prior):\n"
+                        f"  {prices[0]:.2%}\n"
+                        f"  Your estimate MUST stay within 15 percentage points of this price\n"
+                        f"  unless you have strong, specific, recent evidence to justify diverging.\n\n"
+                    )
+            except (ValueError, TypeError):
+                pass
+
         context_block = f"\n{live_context}\n" if live_context else ""
 
         return f"""
 You are a world-class Superforecaster. Your job is to produce the most accurate possible
 probability estimate for a prediction market question.
 
-{lessons_block}{context_block}QUESTION: {question}
+{prices_block}{lessons_block}{context_block}QUESTION: {question}
 DESCRIPTION: {description}
 OUTCOME TO EVALUATE: {outcome}
 
 Follow these steps:
 
-1. ANCHOR: If the live context above contains bookmaker odds, Metaculus, Manifold, or Kalshi
-   prices, start there. Do NOT diverge more than 10 percentage points without a concrete reason.
+1. ANCHOR (mandatory): Start from the CURRENT POLYMARKET PRICES shown above — this is the
+   live market consensus. Also use any bookmaker odds, Metaculus, Manifold, or Kalshi prices
+   in the live context. Do NOT diverge more than 15 percentage points without naming a
+   concrete, recent fact that the market is wrong about.
 
 2. BASE RATE: What is the historical frequency of this type of event?
 
-3. CURRENT EVIDENCE: What specific facts, news, or data push the probability up or down?
+3. CURRENT EVIDENCE: What specific facts, news, or data push the probability up or down
+   relative to the anchor?
 
 4. SYNTHESISE: Combine anchor + base rate + current evidence into a single probability (0.0–1.0).
 
