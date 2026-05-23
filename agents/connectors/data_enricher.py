@@ -3,6 +3,7 @@ DataEnricher — fetches live context for a market question from multiple source
 and returns a formatted block injected into the superforecaster prompt.
 
 Sources:
+  - API-Sports       (requires API_SPORTS_KEY — bookmaker odds + model predictions)
   - Tavily           (requires TAVILY_API_KEY — real-time web search)
   - ESPN             (unofficial API, no key — comprehensive sports analytics)
   - NewsAPI          (requires NEWS_API_KEY)
@@ -28,6 +29,26 @@ STOP_WORDS = {
     "through", "during", "before", "after", "above", "below", "to", "from",
     "up", "down", "out", "off", "over", "under", "again", "than", "then",
     "once", "2025", "2026", "2027",
+}
+
+API_SPORTS_LEAGUES = {
+    # keyword → (base_url, league_id)
+    "champions league": ("https://v3.football.api-sports.io", 2),
+    "ucl":              ("https://v3.football.api-sports.io", 2),
+    "uefa champions":   ("https://v3.football.api-sports.io", 2),
+    "europa league":    ("https://v3.football.api-sports.io", 3),
+    "premier league":   ("https://v3.football.api-sports.io", 39),
+    "la liga":          ("https://v3.football.api-sports.io", 140),
+    "bundesliga":       ("https://v3.football.api-sports.io", 78),
+    "serie a":          ("https://v3.football.api-sports.io", 135),
+    "ligue 1":          ("https://v3.football.api-sports.io", 61),
+    "mls":              ("https://v3.football.api-sports.io", 253),
+    "world cup":        ("https://v3.football.api-sports.io", 1),
+    "nba":              ("https://v1.basketball.api-sports.io", 12),
+    "nba finals":       ("https://v1.basketball.api-sports.io", 12),
+    "formula 1":        ("https://v1.formula-1.api-sports.io", 1),
+    "f1":               ("https://v1.formula-1.api-sports.io", 1),
+    "mlb":              ("https://v1.baseball.api-sports.io", 1),
 }
 
 ESPN_LEAGUES = {
@@ -79,9 +100,209 @@ def _safe_get(url: str, params: dict = None, timeout: int = 8) -> dict:
 class DataEnricher:
 
     def __init__(self):
-        self.news_api_key = os.getenv("NEWS_API_KEY") or os.getenv("NEWSAPI_API_KEY")
+        self.api_sports_key = os.getenv("API_SPORTS_KEY")
+        self.news_api_key   = os.getenv("NEWS_API_KEY") or os.getenv("NEWSAPI_API_KEY")
         self.twitter_bearer = os.getenv("TWITTER_BEARER_TOKEN")
-        self.tavily_key = os.getenv("TAVILY_API_KEY")
+        self.tavily_key     = os.getenv("TAVILY_API_KEY")
+
+    # ══════════════════════════════════════════════════════════════════
+    # API-Sports — bookmaker odds + model predictions (calibration)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _api_sports_season(self) -> int:
+        """Football season uses starting year (Aug→Jul). NBA/others similar."""
+        now = datetime.date.today()
+        return now.year if now.month >= 7 else now.year - 1
+
+    def _api_sports_get(self, host: str, endpoint: str, params: dict = None) -> dict:
+        if not self.api_sports_key:
+            return {}
+        try:
+            resp = requests.get(
+                f"{host}/{endpoint}",
+                params=params or {},
+                headers={"x-apisports-key": self.api_sports_key},
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            pass
+        return {}
+
+    def _api_sports_find_team(self, host: str, name: str) -> int:
+        data = self._api_sports_get(host, "teams", {"search": name})
+        teams = data.get("response", [])
+        return teams[0].get("team", {}).get("id", 0) if teams else 0
+
+    def _api_sports_find_fixture(self, host: str, league_id: int, team_id: int) -> int:
+        season = self._api_sports_season()
+        for window in [{"next": 3}, {"last": 3}]:
+            data = self._api_sports_get(host, "fixtures", {
+                "team": team_id, "league": league_id, "season": season, **window
+            })
+            fixtures = data.get("response", [])
+            if fixtures:
+                return fixtures[0].get("fixture", {}).get("id", 0)
+        return 0
+
+    def _api_sports_predictions(self, host: str, fixture_id: int) -> dict:
+        data = self._api_sports_get(host, "predictions", {"fixture": fixture_id})
+        resp = data.get("response", [])
+        if not resp:
+            return {}
+        pred = resp[0].get("predictions", {})
+        pct  = pred.get("percent", {})
+        winner = pred.get("winner", {})
+        return {
+            "home_pct":        pct.get("home", ""),
+            "draw_pct":        pct.get("draw", ""),
+            "away_pct":        pct.get("away", ""),
+            "predicted_winner": winner.get("name", ""),
+            "advice":          pred.get("advice", ""),
+        }
+
+    def _api_sports_odds(self, host: str, fixture_id: int) -> dict:
+        """Average bookmaker H2H odds → normalized implied probabilities."""
+        data = self._api_sports_get(host, "odds", {"fixture": fixture_id, "bet": 1})
+        bookmakers = (data.get("response") or [{}])[0].get("bookmakers", [])
+        home_odds, draw_odds, away_odds = [], [], []
+        for bk in bookmakers[:5]:
+            for bet in bk.get("bets", []):
+                if bet.get("name") in ("Match Winner", "Home/Away"):
+                    for v in bet.get("values", []):
+                        try:
+                            odd = float(v.get("odd", 0))
+                            if odd <= 0:
+                                continue
+                            val = v.get("value", "").lower()
+                            if val in ("home", "1"):
+                                home_odds.append(odd)
+                            elif val in ("draw", "x"):
+                                draw_odds.append(odd)
+                            elif val in ("away", "2"):
+                                away_odds.append(odd)
+                        except Exception:
+                            pass
+        if not home_odds:
+            return {}
+        h = sum(home_odds) / len(home_odds)
+        a = sum(away_odds) / len(away_odds) if away_odds else 0
+        d = sum(draw_odds) / len(draw_odds) if draw_odds else 0
+        raw_h, raw_a, raw_d = (1/h if h else 0), (1/a if a else 0), (1/d if d else 0)
+        total = raw_h + raw_a + raw_d or 1
+        return {
+            "home_implied": round(raw_h / total, 3),
+            "away_implied": round(raw_a / total, 3),
+            "draw_implied": round(raw_d / total, 3) if d else None,
+            "home_odd": round(h, 2),
+            "away_odd": round(a, 2),
+            "draw_odd": round(d, 2) if d else None,
+            "num_bookmakers": len(home_odds),
+        }
+
+    def _api_sports_standing(self, host: str, league_id: int, team_id: int) -> dict:
+        season = self._api_sports_season()
+        data = self._api_sports_get(host, "standings", {
+            "league": league_id, "season": season, "team": team_id
+        })
+        groups = (data.get("response") or [{}])[0].get("league", {}).get("standings", [[]])
+        flat = groups[0] if groups and isinstance(groups[0], list) else groups
+        for entry in flat:
+            if entry.get("team", {}).get("id") == team_id:
+                a = entry.get("all", {})
+                return {
+                    "rank":    entry.get("rank"),
+                    "points":  entry.get("points"),
+                    "form":    entry.get("form", ""),
+                    "played":  a.get("played", 0),
+                    "win":     a.get("win", 0),
+                    "draw":    a.get("draw", 0),
+                    "lose":    a.get("lose", 0),
+                    "gf":      a.get("goals", {}).get("for", 0),
+                    "ga":      a.get("goals", {}).get("against", 0),
+                }
+        return {}
+
+    def _get_api_sports(self, question: str) -> dict:
+        if not self.api_sports_key:
+            return {}
+        q = question.lower()
+        host = league_id = None
+        for kw, (h, lid) in sorted(API_SPORTS_LEAGUES.items(), key=lambda x: -len(x[0])):
+            if kw in q:
+                host, league_id = h, lid
+                break
+        if not host:
+            return {}
+
+        print(f"  [API-Sports] League {league_id} @ {host.split('//')[1]}")
+
+        # Extract capitalised words as candidate team names
+        candidates = re.findall(r'\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b', question)
+        team_ids = {}
+        for name in dict.fromkeys(candidates):  # dedupe, preserve order
+            if name.lower() in STOP_WORDS:
+                continue
+            tid = self._api_sports_find_team(host, name)
+            if tid:
+                team_ids[name] = tid
+
+        print(f"  [API-Sports] Teams matched: {list(team_ids.keys()) or 'none'}")
+
+        result = {
+            "host": host, "league_id": league_id,
+            "fixture_id": 0, "predictions": {}, "odds": {}, "teams": {},
+        }
+
+        if team_ids:
+            first_id = next(iter(team_ids.values()))
+            fid = self._api_sports_find_fixture(host, league_id, first_id)
+            result["fixture_id"] = fid
+            if fid:
+                print(f"  [API-Sports] Fixture {fid}: fetching predictions + odds...")
+                result["predictions"] = self._api_sports_predictions(host, fid)
+                result["odds"]        = self._api_sports_odds(host, fid)
+            for name, tid in team_ids.items():
+                result["teams"][name] = self._api_sports_standing(host, league_id, tid)
+
+        return result
+
+    def _format_api_sports(self, data: dict) -> list:
+        lines = ["\nAPI-Sports — bookmaker odds + predictions (use as calibration anchor):"]
+        pred = data.get("predictions", {})
+        if pred:
+            if pred.get("predicted_winner"):
+                lines.append(f"  Model pick: {pred['predicted_winner']}")
+            if pred.get("advice"):
+                lines.append(f"  Advice: {pred['advice']}")
+            pcts = [f"Home {pred['home_pct']}", f"Draw {pred['draw_pct']}", f"Away {pred['away_pct']}"]
+            lines.append(f"  Win %: {' | '.join(p for p in pcts if p.split()[-1])}")
+
+        odds = data.get("odds", {})
+        if odds:
+            lines.append(f"  Bookmaker consensus ({odds.get('num_bookmakers','?')} books):")
+            lines.append(f"    Home win: {odds['home_odd']} → {odds['home_implied']:.1%} implied")
+            if odds.get("draw_odd"):
+                lines.append(f"    Draw:     {odds['draw_odd']} → {odds['draw_implied']:.1%} implied")
+            lines.append(f"    Away win: {odds['away_odd']} → {odds['away_implied']:.1%} implied")
+            lines.append(
+                "    *** Treat bookmaker implied probabilities as your primary calibration — "
+                "sharp money has priced these in. Your estimate should NOT diverge more than "
+                "~10pp without a strong information edge. ***"
+            )
+
+        if data.get("teams"):
+            lines.append("  League standings:")
+            for name, s in data["teams"].items():
+                if s:
+                    form = f"  Form: {s['form']}" if s.get("form") else ""
+                    lines.append(
+                        f"    {name}: #{s.get('rank','?')}  "
+                        f"W{s.get('win','?')}/D{s.get('draw','?')}/L{s.get('lose','?')}  "
+                        f"Pts {s.get('points','?')}  GF{s.get('gf','?')}/GA{s.get('ga','?')}{form}"
+                    )
+        return lines
 
     # ══════════════════════════════════════════════════════════════════
     # ESPN — comprehensive sports analytics
@@ -698,21 +919,27 @@ class DataEnricher:
 
         print(f"  [DataEnricher] Fetching live context for: {keywords!r}")
 
-        tavily    = self._get_tavily(question)
-        espn      = self._get_espn(question)
-        news      = self._get_news(keywords)
-        tweets    = self._get_tweets(keywords)
-        reddit    = self._get_reddit(keywords)
-        wiki      = self._get_wikipedia_pageviews(keywords)
-        metaculus = self._get_metaculus(keywords)
-        trends    = self._get_google_trends(keywords)
+        api_sports = self._get_api_sports(question)
+        tavily     = self._get_tavily(question)
+        espn       = self._get_espn(question)
+        news       = self._get_news(keywords)
+        tweets     = self._get_tweets(keywords)
+        reddit     = self._get_reddit(keywords)
+        wiki       = self._get_wikipedia_pageviews(keywords)
+        metaculus  = self._get_metaculus(keywords)
+        trends     = self._get_google_trends(keywords)
 
-        if not any([tavily, espn, news, tweets, reddit, wiki, metaculus, trends]):
+        if not any([api_sports.get("predictions") or api_sports.get("odds"),
+                    tavily, espn, news, tweets, reddit, wiki, metaculus, trends]):
             return ""
 
         lines = ["LIVE CONTEXT (fetched now — use this to update your forecast):"]
 
-        # Tavily — highest quality, goes first
+        # API-Sports — bookmaker odds are the strongest calibration signal, goes first
+        if api_sports.get("predictions") or api_sports.get("odds"):
+            lines += self._format_api_sports(api_sports)
+
+        # Tavily — highest quality web search, goes next
         if tavily:
             lines.append(f"\nReal-time web search ({len(tavily)} results):")
             for r in tavily:
