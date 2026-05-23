@@ -382,8 +382,20 @@ class Executor:
 
         from agents.memory.trade_log import get_recent_lessons
         from agents.connectors.data_enricher import DataEnricher
+        from agents.connectors.whale_tracker import WhaleTracker
         lessons = get_recent_lessons(5)
         live_context = DataEnricher().get_context(question, whale_signals=whale_signals)
+
+        # Append direct holder snapshot for this specific market (post-selection signal)
+        condition_id = market.get("condition_id", "")
+        if condition_id:
+            try:
+                holder_ctx = WhaleTracker().get_market_holders(condition_id)
+                if holder_ctx:
+                    live_context = (live_context or "") + holder_ctx
+            except Exception as _wt_err:
+                print(f"  [WhaleTracker] holders fetch failed (non-fatal): {_wt_err}")
+
         prompt = self.prompter.superforecaster(question, description, outcomes,
                                                lessons=lessons, live_context=live_context,
                                                market_prices=outcome_prices)
