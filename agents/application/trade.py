@@ -12,9 +12,10 @@ import time
 # =========================================================================
 # GUARDRAILS CONFIG  -- tune these. All money limits are FRACTIONS of balance.
 # =========================================================================
-MIN_EDGE = 0.10            # require >=10 percentage-point gap between the bot's
-                           # estimated probability and the market price, or skip.
-MAX_TRADE_FRACTION = 0.10  # never stake more than 10% of current balance on one trade
+MIN_EDGE = 0.05              # strong mispricing: full-size trade
+MIN_EDGE_CONVICTION = 0.03  # high-confidence trade even with smaller edge: half-size
+MAX_TRADE_FRACTION = 0.10   # never stake more than 10% of current balance on one trade
+CONVICTION_TRADE_FRACTION = 0.05  # half-size for conviction trades
 MAX_OPEN_POSITIONS = 5     # don't open a new position if this many are already open
 DAILY_SPEND_FRACTION = 0.30  # stop opening trades once 30% of starting daily balance spent
 DAILY_LOSS_FRACTION = 0.15   # stop for the day if balance drops 15% below the day's start
@@ -91,6 +92,16 @@ class Trader:
             if len(overlap) >= 2:
                 return True, oq
         return False, None
+
+    def _parse_confidence(self, text: str) -> str:
+        """Extract HIGH / MEDIUM / LOW from superforecaster or trade output."""
+        try:
+            m = re.search(r"[Cc]onfidence\s*[:=]\s*(HIGH|MEDIUM|LOW)", text)
+            if m:
+                return m.group(1).upper()
+        except Exception:
+            pass
+        return "MEDIUM"
 
     def _resolve_trade(self, market, prob, market_price):
         """Return (token_id, side_label) for the correct side of the trade.
@@ -268,21 +279,36 @@ class Trader:
             print(f"6. TRADE: {best_trade}")
 
             prob, price = self._parse_prob_and_price(best_trade, market)
-            if prob is not None and price is not None:
-                edge = abs(prob - price)
-                print(f"Edge check: estimate={prob:.3f} market={price:.3f} edge={edge:.3f} (need >= {MIN_EDGE})")
-                if edge < MIN_EDGE:
-                    print(f"NO REAL EDGE ({edge:.3f} < {MIN_EDGE}). Skipping trade this hour.")
-                    return
-            else:
+            if prob is None or price is None:
                 print("Edge check: could not determine market price; skipping trade for safety.")
+                return
+
+            edge = abs(prob - price)
+            confidence = self._parse_confidence(best_trade)
+            print(f"Edge check: estimate={prob:.3f} market={price:.3f} edge={edge:.3f} confidence={confidence}")
+
+            # Two-tier system:
+            #   Tier 1 — strong mispricing  (edge >= 5%): full-size trade
+            #   Tier 2 — conviction trade   (edge >= 3% + HIGH confidence): half-size trade
+            conviction_trade = False
+            if edge >= MIN_EDGE:
+                print(f"STRONG EDGE ({edge:.3f} >= {MIN_EDGE}). Full-size trade.")
+            elif edge >= MIN_EDGE_CONVICTION and confidence == "HIGH":
+                conviction_trade = True
+                print(f"CONVICTION TRADE: edge={edge:.3f} confidence=HIGH. Half-size trade.")
+            else:
+                reason = (f"edge {edge:.3f} < {MIN_EDGE_CONVICTION}" if edge < MIN_EDGE_CONVICTION
+                          else f"edge {edge:.3f} < {MIN_EDGE} and confidence={confidence} (need HIGH)")
+                print(f"NO TRADE: {reason}. Skipping.")
                 return
 
             amount = self.agent.format_trade_prompt_for_execution(best_trade)
 
-            max_trade = balance * MAX_TRADE_FRACTION
+            full_max    = balance * MAX_TRADE_FRACTION
+            conv_max    = balance * CONVICTION_TRADE_FRACTION
+            size_cap    = conv_max if conviction_trade else full_max
             remaining_daily = max(spend_cap - spent_today, 0)
-            trade_amount = min(float(amount) if amount else max_trade, max_trade, remaining_daily)
+            trade_amount = min(float(amount) if amount else size_cap, size_cap, remaining_daily)
 
             if trade_amount < ABSOLUTE_MIN_TRADE:
                 print(f"Trade size ${trade_amount:.2f} below minimum ${ABSOLUTE_MIN_TRADE}. Skipping.")
