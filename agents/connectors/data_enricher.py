@@ -4,13 +4,15 @@ and returns a formatted block injected into the superforecaster prompt.
 
 Sources:
   - API-Sports       (requires API_SPORTS_KEY — bookmaker odds + model predictions)
+  - Metaculus        (public API, no key — crowd forecasts as calibration anchor)
+  - Kalshi           (requires KALSHI_API_KEY — competing prediction market prices)
+  - Manifold         (public API, no key — competing prediction market prices)
   - Tavily           (requires TAVILY_API_KEY — real-time web search)
   - ESPN             (unofficial API, no key — comprehensive sports analytics)
   - NewsAPI          (requires NEWS_API_KEY)
   - Twitter/X        (requires TWITTER_BEARER_TOKEN)
   - Reddit           (public API, no key)
   - Wikipedia        (public API, no key)
-  - Metaculus        (public API, no key)
   - Google Trends    (pytrends, no key — may be unreliable on cloud IPs)
 """
 
@@ -101,6 +103,7 @@ class DataEnricher:
 
     def __init__(self):
         self.api_sports_key = os.getenv("API_SPORTS_KEY")
+        self.kalshi_key     = os.getenv("KALSHI_API_KEY")
         self.news_api_key   = os.getenv("NEWS_API_KEY") or os.getenv("NEWSAPI_API_KEY")
         self.twitter_bearer = os.getenv("TWITTER_BEARER_TOKEN")
         self.tavily_key     = os.getenv("TAVILY_API_KEY")
@@ -883,6 +886,69 @@ class DataEnricher:
             return []
 
     # ══════════════════════════════════════════════════════════════════
+    # Kalshi — competing prediction market (calibration)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _get_kalshi(self, query: str, max_results: int = 3) -> list:
+        try:
+            headers = {"Accept": "application/json"}
+            if self.kalshi_key:
+                headers["Authorization"] = f"Bearer {self.kalshi_key}"
+            resp = requests.get(
+                "https://trading-api.kalshi.com/trade-api/v2/markets",
+                params={"limit": 10, "status": "open", "keyword": query},
+                headers=headers,
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                return []
+            results = []
+            for m in resp.json().get("markets", [])[:max_results]:
+                raw = m.get("yes_ask") or m.get("last_price") or m.get("yes_bid")
+                if raw is None:
+                    continue
+                # Kalshi uses cents (0–100); normalise to 0–1
+                yes_pct = raw / 100 if raw > 1 else raw
+                results.append({
+                    "title": m.get("title", ""),
+                    "yes_pct": round(yes_pct, 3),
+                    "volume": m.get("volume", 0),
+                    "close_time": (m.get("close_time") or "")[:10],
+                })
+            return results
+        except Exception as e:
+            print(f"  [DataEnricher] Kalshi error: {e}")
+            return []
+
+    # ══════════════════════════════════════════════════════════════════
+    # Manifold Markets — free prediction market (calibration, no key)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _get_manifold(self, query: str, max_results: int = 3) -> list:
+        try:
+            resp = requests.get(
+                "https://api.manifold.markets/v0/search-markets",
+                params={"term": query, "limit": 6, "filter": "open", "sort": "liquidity"},
+                headers={"Accept": "application/json"},
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                return []
+            results = []
+            for m in resp.json()[:max_results]:
+                prob = m.get("probability")
+                if prob is not None:
+                    results.append({
+                        "question": m.get("question", ""),
+                        "probability": round(float(prob), 3),
+                        "liquidity": int(m.get("totalLiquidity", 0)),
+                    })
+            return results
+        except Exception as e:
+            print(f"  [DataEnricher] Manifold error: {e}")
+            return []
+
+    # ══════════════════════════════════════════════════════════════════
     # Google Trends
     # ══════════════════════════════════════════════════════════════════
 
@@ -920,26 +986,68 @@ class DataEnricher:
         print(f"  [DataEnricher] Fetching live context for: {keywords!r}")
 
         api_sports = self._get_api_sports(question)
+        metaculus  = self._get_metaculus(keywords)
+        kalshi     = self._get_kalshi(keywords)
+        manifold   = self._get_manifold(keywords)
         tavily     = self._get_tavily(question)
         espn       = self._get_espn(question)
         news       = self._get_news(keywords)
         tweets     = self._get_tweets(keywords)
         reddit     = self._get_reddit(keywords)
         wiki       = self._get_wikipedia_pageviews(keywords)
-        metaculus  = self._get_metaculus(keywords)
         trends     = self._get_google_trends(keywords)
 
         if not any([api_sports.get("predictions") or api_sports.get("odds"),
-                    tavily, espn, news, tweets, reddit, wiki, metaculus, trends]):
+                    metaculus, kalshi, manifold,
+                    tavily, espn, news, tweets, reddit, wiki, trends]):
             return ""
 
         lines = ["LIVE CONTEXT (fetched now — use this to update your forecast):"]
 
-        # API-Sports — bookmaker odds are the strongest calibration signal, goes first
+        # ── CALIBRATION BLOCK (strongest signals — read these first) ──────────
+
+        # 1. API-Sports: bookmaker odds (sports only)
         if api_sports.get("predictions") or api_sports.get("odds"):
             lines += self._format_api_sports(api_sports)
 
-        # Tavily — highest quality web search, goes next
+        # 2. Prediction market cross-reference: Metaculus, Kalshi, Manifold
+        has_pred_markets = metaculus or kalshi or manifold
+        if has_pred_markets:
+            lines.append("\nPrediction market consensus (treat as calibration anchor):")
+            lines.append(
+                "  *** These markets have aggregated informed forecasters / traders. "
+                "Do NOT produce an estimate that diverges more than ~10pp from the "
+                "consensus below without a concrete information edge. ***"
+            )
+
+        if metaculus:
+            lines.append(f"  Metaculus ({len(metaculus)} questions):")
+            for m in metaculus:
+                weight = "HIGH" if m["forecasters"] >= 50 else "low"
+                lines.append(
+                    f"    [{m['forecasters']} forecasters | weight:{weight}] "
+                    f"{m['title']} → p(Yes) = {m['community_p_yes']:.1%}"
+                )
+
+        if kalshi:
+            lines.append(f"  Kalshi ({len(kalshi)} markets):")
+            for k in kalshi:
+                lines.append(
+                    f"    {k['title']} → Yes={k['yes_pct']:.1%}"
+                    + (f"  [closes {k['close_time']}]" if k.get("close_time") else "")
+                )
+
+        if manifold:
+            lines.append(f"  Manifold ({len(manifold)} markets):")
+            for mf in manifold:
+                lines.append(
+                    f"    {mf['question']} → {mf['probability']:.1%} "
+                    f"(${mf['liquidity']:,} liquidity)"
+                )
+
+        # ── RESEARCH BLOCK (context to reason from) ───────────────────────────
+
+        # Tavily: real-time web search
         if tavily:
             lines.append(f"\nReal-time web search ({len(tavily)} results):")
             for r in tavily:
@@ -947,7 +1055,7 @@ class DataEnricher:
                 if r["snippet"]:
                     lines.append(f"    {r['snippet']}")
 
-        # ESPN — full sports analytics block
+        # ESPN: full sports analytics
         if espn:
             lines += self._format_espn(espn)
 
@@ -964,15 +1072,6 @@ class DataEnricher:
                 f"\nWikipedia '{wiki['article']}': {wiki['views_last_7d']:,} views last 7d "
                 f"(avg daily {wiki['avg_daily_30d']:,}){note}"
             )
-
-        # Prediction market cross-reference
-        if metaculus:
-            lines.append(f"\nMetaculus ({len(metaculus)} similar questions):")
-            for m in metaculus:
-                lines.append(
-                    f"  [{m['forecasters']} forecasters] {m['title']} "
-                    f"→ p(Yes)={m['community_p_yes']:.1%}"
-                )
 
         # News
         if news:
