@@ -138,6 +138,7 @@ class Polymarket:
             "outcomes": str(market.get("outcomes", "[]")),
             "outcome_prices": str(market.get("outcomePrices", "[]")),
             "clob_token_ids": str(market.get("clobTokenIds", "[]")),
+            "condition_id": market.get("conditionId", ""),
         }
         if token_id:
             result["clob_token_ids"] = token_id
