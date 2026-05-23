@@ -50,6 +50,9 @@ def log_trade(
         "edge": round(edge, 4),
         "amount_usd": round(amount_usd, 2),
         "status": status,
+        "outcome": "pending" if status == "filled" else "n/a",
+        "exit_price": None,
+        "pnl_usd": None,
     })
     _save(TRADE_HISTORY_FILE, history)
 
