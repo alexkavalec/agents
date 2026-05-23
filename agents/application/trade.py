@@ -221,6 +221,20 @@ class Trader:
                     return
                 print(f"Cooldown OK: last trade was {elapsed:.1f} min ago.")
 
+            # ── WHALE SCAN (fetch once — reused for context + candidate boosting) ──
+            whale_signals = []
+            try:
+                from agents.connectors.whale_tracker import WhaleTracker
+                whale_signals = WhaleTracker().get_whale_signals()
+                if whale_signals:
+                    print(f"  WHALE SIGNALS: {len(whale_signals)} consensus position(s) detected")
+                    for s in whale_signals[:5]:
+                        print(f"    {s['whale_count']}x whales → {s['side'].upper()} "
+                              f"'{s['title'][:55]}' @ {s['avg_entry']:.3f} "
+                              f"(now {s['cur_price']:.3f}, drift {s['price_drift']:.0%})")
+            except Exception as e:
+                print(f"  WhaleTracker error (non-fatal): {e}")
+
             events = self.polymarket.get_all_tradeable_events()
             print(f"2. FOUND {len(events)} EVENTS")
             if not events:
@@ -235,6 +249,26 @@ class Trader:
             if not markets:
                 print("No markets, exiting.")
                 return
+
+            # ── WHALE BOOST: promote whale-signalled markets to the top of the list ──
+            # If a whale signal title matches a market question, move that market first
+            # so the AI is more likely to select it.
+            if whale_signals:
+                whale_titles = [s["title"].lower() for s in whale_signals]
+
+                def _whale_score(m: dict) -> int:
+                    q = (m.get("question") or "").lower()
+                    q_words = set(w for w in q.split() if len(w) > 3)
+                    for wt in whale_titles:
+                        wt_words = set(w for w in wt.split() if len(w) > 3)
+                        if len(q_words & wt_words) >= 2:
+                            return 1
+                    return 0
+
+                markets = sorted(markets, key=_whale_score, reverse=True)
+                boosted = sum(1 for m in markets if _whale_score(m) > 0)
+                if boosted:
+                    print(f"  WHALE BOOST: {boosted} market(s) promoted to top of candidate list")
 
             # Collect open position titles for correlation filtering (soft + hard)
             open_pos_questions = []
@@ -272,7 +306,7 @@ class Trader:
                 return
             print(f"Selected: {question[:80]}")
 
-            best_trade = self.agent.source_best_trade(market)
+            best_trade = self.agent.source_best_trade(market, whale_signals=whale_signals)
             if best_trade is None:
                 print("Could not generate trade (market missing question). Skipping.")
                 return

@@ -978,7 +978,7 @@ class DataEnricher:
     # Main entry point
     # ══════════════════════════════════════════════════════════════════
 
-    def get_context(self, question: str) -> str:
+    def get_context(self, question: str, whale_signals: list = None) -> str:
         keywords = _extract_keywords(question)
         if not keywords:
             return ""
@@ -997,12 +997,27 @@ class DataEnricher:
         wiki       = self._get_wikipedia_pageviews(keywords)
         trends     = self._get_google_trends(keywords)
 
-        if not any([api_sports.get("predictions") or api_sports.get("odds"),
+        # Whale signals are passed in from the trade cycle (fetched once, reused per market)
+        from agents.connectors.whale_tracker import WhaleTracker
+        if whale_signals is None:
+            try:
+                whale_signals = WhaleTracker().get_whale_signals()
+            except Exception as e:
+                print(f"  [DataEnricher] WhaleTracker error: {e}")
+                whale_signals = []
+        whale_context = WhaleTracker().format_whale_context(question, whale_signals)
+
+        if not any([whale_context,
+                    api_sports.get("predictions") or api_sports.get("odds"),
                     metaculus, kalshi, manifold,
                     tavily, espn, news, tweets, reddit, wiki, trends]):
             return ""
 
         lines = ["LIVE CONTEXT (fetched now — use this to update your forecast):"]
+
+        # ── WHALE SIGNAL (highest-priority — smart money with track record) ────
+        if whale_context:
+            lines.append(whale_context)
 
         # ── CALIBRATION BLOCK (strongest signals — read these first) ──────────
 
