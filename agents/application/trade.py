@@ -450,6 +450,16 @@ class Trader:
                 order_type=OrderType.FOK,
             )
             print(f"  {reason} executed: {resp}")
+            # Prevent re-entry on the same token this cycle
+            try:
+                state = self._load_state(0)
+                traded_tokens = state.get("traded_tokens", [])
+                if token_id and token_id not in traded_tokens:
+                    traded_tokens.append(token_id)
+                    state["traded_tokens"] = traded_tokens
+                    self._save_state(state)
+            except Exception:
+                pass
             if lesson_ctx:
                 outcome = "closed_profit" if lesson_ctx.get("pnl_pct", 0) > 0 else "closed_loss"
                 lesson = (
