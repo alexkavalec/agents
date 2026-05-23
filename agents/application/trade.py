@@ -172,6 +172,9 @@ class Trader:
             print(f"Balance: ${balance:.2f}")
 
             from agents.memory.trade_log import get_stats
+            from agents.memory.scoreboard import resolve_completed, print_scoreboard
+            resolve_completed(self.polymarket)
+            print_scoreboard()
             stats = get_stats()
             print(f"Memory: {stats['total_attempts']} trade attempts | "
                   f"{stats['filled']} filled | {stats['fok_killed']} FOK killed | "
