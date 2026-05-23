@@ -369,7 +369,7 @@ class Executor:
                 docs.append((doc, 1.0))
         return docs[:4]
 
-    def source_best_trade(self, market_object) -> str:
+    def source_best_trade(self, market_object, whale_signals: list = None) -> str:
         market_document = market_object[0].dict()
         market = market_document["metadata"]
         outcome_prices = self._safe_parse_list(market.get("outcome_prices"))
@@ -383,7 +383,7 @@ class Executor:
         from agents.memory.trade_log import get_recent_lessons
         from agents.connectors.data_enricher import DataEnricher
         lessons = get_recent_lessons(5)
-        live_context = DataEnricher().get_context(question)
+        live_context = DataEnricher().get_context(question, whale_signals=whale_signals)
         prompt = self.prompter.superforecaster(question, description, outcomes,
                                                lessons=lessons, live_context=live_context,
                                                market_prices=outcome_prices)
