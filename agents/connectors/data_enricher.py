@@ -51,6 +51,13 @@ API_SPORTS_LEAGUES = {
     "formula 1":        ("https://v1.formula-1.api-sports.io", 1),
     "f1":               ("https://v1.formula-1.api-sports.io", 1),
     "mlb":              ("https://v1.baseball.api-sports.io", 1),
+    # Tennis grand slams — api-sports league IDs
+    "french open":      ("https://v1.tennis.api-sports.io", 2),
+    "roland garros":    ("https://v1.tennis.api-sports.io", 2),
+    "wimbledon":        ("https://v1.tennis.api-sports.io", 3),
+    "us open":          ("https://v1.tennis.api-sports.io", 4),
+    "australian open":  ("https://v1.tennis.api-sports.io", 1),
+    "atp finals":       ("https://v1.tennis.api-sports.io", 5),
 }
 
 ESPN_LEAGUES = {
@@ -828,6 +835,8 @@ class DataEnricher:
     # ══════════════════════════════════════════════════════════════════
 
     def _get_wikipedia_pageviews(self, query: str) -> dict:
+        # Wikimedia REST API requires a descriptive User-Agent with contact info
+        wiki_headers = {"User-Agent": "PolymarketTradingBot/1.0 (https://github.com/alexkavalec/agents)"}
         try:
             search = _safe_get(
                 "https://en.wikipedia.org/w/api.php",
@@ -839,12 +848,19 @@ class DataEnricher:
             article = titles[0].replace(" ", "_")
             end = datetime.date.today()
             start = end - datetime.timedelta(days=30)
-            pv = _safe_get(
-                f"https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article"
-                f"/en.wikipedia/all-access/all-agents/{requests.utils.quote(article)}"
-                f"/daily/{start.strftime('%Y%m%d')}/{end.strftime('%Y%m%d')}"
-            )
-            items = pv.get("items", [])
+            try:
+                pv = requests.get(
+                    f"https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article"
+                    f"/en.wikipedia/all-access/all-agents/{requests.utils.quote(article)}"
+                    f"/daily/{start.strftime('%Y%m%d')}/{end.strftime('%Y%m%d')}",
+                    headers=wiki_headers,
+                    timeout=8,
+                )
+                if pv.status_code != 200:
+                    return {}
+                items = pv.json().get("items", [])
+            except Exception:
+                return {}
             if not items:
                 return {}
             total = sum(i.get("views", 0) for i in items)
@@ -865,54 +881,65 @@ class DataEnricher:
     # ══════════════════════════════════════════════════════════════════
 
     def _get_metaculus(self, query: str, max_questions: int = 3) -> list:
-        try:
-            resp = requests.get(
-                "https://www.metaculus.com/api2/questions/",
-                params={"search": query, "status": "open", "limit": max_questions,
-                        "order_by": "-activity"},
-                headers={"Accept": "application/json"},
-                timeout=8,
-            )
-            if resp.status_code != 200:
-                return []
-            results = []
-            for q in resp.json().get("results", []):
-                pred = q.get("community_prediction", {})
-                p_yes = (pred.get("full", {}) or {}).get("q2")
-                if p_yes is not None:
-                    results.append({
-                        "title": q.get("title", ""),
-                        "community_p_yes": round(p_yes, 3),
-                        "forecasters": q.get("number_of_forecasters", 0),
-                    })
-            return results
-        except Exception as e:
-            print(f"  [DataEnricher] Metaculus error: {e}")
-            return []
+        # Try v3 API first (current), fall back to v2
+        for url, param_key in [
+            ("https://www.metaculus.com/api2/questions/", "search"),
+        ]:
+            try:
+                resp = requests.get(
+                    url,
+                    params={param_key: query, "status": "open", "limit": max_questions,
+                            "order_by": "-activity"},
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "PolymarketTradingBot/1.0 (https://github.com/alexkavalec/agents)",
+                    },
+                    timeout=8,
+                )
+                if resp.status_code == 403:
+                    print(f"  [DataEnricher] Metaculus returned 403 — skipping (auth required)")
+                    return []
+                if resp.status_code != 200:
+                    continue
+                results = []
+                for q in resp.json().get("results", []):
+                    pred = q.get("community_prediction", {})
+                    p_yes = (pred.get("full", {}) or {}).get("q2")
+                    if p_yes is not None:
+                        results.append({
+                            "title": q.get("title", ""),
+                            "community_p_yes": round(p_yes, 3),
+                            "forecasters": q.get("number_of_forecasters", 0),
+                        })
+                return results
+            except Exception as e:
+                print(f"  [DataEnricher] Metaculus error: {e}")
+        return []
 
     # ══════════════════════════════════════════════════════════════════
     # Kalshi — competing prediction market (calibration)
     # ══════════════════════════════════════════════════════════════════
 
     def _get_kalshi(self, query: str, max_results: int = 3) -> list:
+        # Kalshi trading API requires auth even for reads — skip without a key
+        if not self.kalshi_key:
+            return []
         try:
-            headers = {"Accept": "application/json"}
-            if self.kalshi_key:
-                headers["Authorization"] = f"Bearer {self.kalshi_key}"
             resp = requests.get(
                 "https://trading-api.kalshi.com/trade-api/v2/markets",
                 params={"limit": 10, "status": "open", "keyword": query},
-                headers=headers,
+                headers={"Accept": "application/json",
+                         "Authorization": f"Bearer {self.kalshi_key}"},
                 timeout=8,
             )
             if resp.status_code != 200:
+                print(f"  [DataEnricher] Kalshi HTTP {resp.status_code} — skipping")
                 return []
             results = []
             for m in resp.json().get("markets", [])[:max_results]:
                 raw = m.get("yes_ask") or m.get("last_price") or m.get("yes_bid")
                 if raw is None:
                     continue
-                # Kalshi uses cents (0–100); normalise to 0–1
                 yes_pct = raw / 100 if raw > 1 else raw
                 results.append({
                     "title": m.get("title", ""),
