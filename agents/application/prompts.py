@@ -163,23 +163,48 @@ PAST TRADE LESSONS — use these to calibrate your forecast:
 """
         # Build a hard anchor block from live Polymarket prices — always shown first.
         prices_block = ""
+        anchor_range_reminder = ""
         if market_prices:
             try:
                 prices = [float(p) for p in market_prices]
-                # Assume binary market: index 0 = YES, index 1 = NO
                 if len(prices) >= 2:
+                    yes_price = prices[0]
+                    no_price = prices[1]
+                    low = max(0.01, yes_price - 0.15)
+                    high = min(0.99, yes_price + 0.15)
                     prices_block = (
-                        f"CURRENT POLYMARKET PRICES (live consensus — treat as your prior):\n"
-                        f"  YES = {prices[0]:.2%}   NO = {prices[1]:.2%}\n"
-                        f"  Your estimate MUST stay within 15 percentage points of these prices\n"
-                        f"  unless you have strong, specific, recent evidence to justify diverging.\n\n"
+                        f"{'='*60}\n"
+                        f"CURRENT POLYMARKET PRICES (live crowd consensus):\n"
+                        f"  YES = {yes_price:.2%}   NO = {no_price:.2%}\n\n"
+                        f"HARD CONSTRAINT: YOUR YES PROBABILITY MUST BE IN [{low:.2%}, {high:.2%}]\n"
+                        f"  = market price +/- 15 percentage points, nothing more.\n"
+                        f"  Polymarket prices aggregate thousands of informed traders with real money.\n"
+                        f"  Diverging by more than 15pp requires a NAMED, SPECIFIC, VERIFIABLE\n"
+                        f"  recent fact that those traders don't know. Vague reasoning does NOT qualify.\n"
+                        f"  WRONG: market=10%, you output 70% because 'it seems likely'. Max allowed: 25%.\n"
+                        f"  WRONG: market=80%, you output 20% because 'the news looks bad'. Min allowed: 65%.\n"
+                        f"  If your reasoning pushes you past the boundary — CAP IT at the boundary.\n"
+                        f"{'='*60}\n\n"
+                    )
+                    anchor_range_reminder = (
+                        f"\nBEFORE WRITING YOUR ANSWER: verify your probability is in [{low:.2%}, {high:.2%}]. "
+                        f"If it is outside this range, bring it back inside the boundary.\n"
                     )
                 elif len(prices) == 1:
+                    p = prices[0]
+                    low = max(0.01, p - 0.15)
+                    high = min(0.99, p + 0.15)
                     prices_block = (
-                        f"CURRENT POLYMARKET PRICE (live consensus — treat as your prior):\n"
-                        f"  {prices[0]:.2%}\n"
-                        f"  Your estimate MUST stay within 15 percentage points of this price\n"
-                        f"  unless you have strong, specific, recent evidence to justify diverging.\n\n"
+                        f"{'='*60}\n"
+                        f"CURRENT POLYMARKET PRICE (live crowd consensus): {p:.2%}\n\n"
+                        f"HARD CONSTRAINT: YOUR YES PROBABILITY MUST BE IN [{low:.2%}, {high:.2%}]\n"
+                        f"  = market price +/- 15 percentage points, nothing more.\n"
+                        f"  If your reasoning pushes you past the boundary — CAP IT at the boundary.\n"
+                        f"{'='*60}\n\n"
+                    )
+                    anchor_range_reminder = (
+                        f"\nBEFORE WRITING YOUR ANSWER: verify your probability is in [{low:.2%}, {high:.2%}]. "
+                        f"If it is outside this range, bring it back inside the boundary.\n"
                     )
             except (ValueError, TypeError):
                 pass
@@ -196,18 +221,20 @@ OUTCOME TO EVALUATE: {outcome}
 
 Follow these steps:
 
-1. ANCHOR (mandatory): Start from the CURRENT POLYMARKET PRICES shown above — this is the
-   live market consensus. Also use any bookmaker odds, Metaculus, Manifold, or Kalshi prices
-   in the live context. Do NOT diverge more than 15 percentage points without naming a
-   concrete, recent fact that the market is wrong about.
+1. ANCHOR (mandatory): Your starting point is the CURRENT POLYMARKET PRICE shown above.
+   This is the aggregated wisdom of thousands of informed traders risking real money.
+   You MUST stay within 15 percentage points of this price.
+   The allowed range is shown in the constraint box above — do not exceed it.
 
 2. BASE RATE: What is the historical frequency of this type of event?
 
-3. CURRENT EVIDENCE: What specific facts, news, or data push the probability up or down
-   relative to the anchor?
+3. CURRENT EVIDENCE: What specific, named, verifiable facts push the probability
+   up or down relative to the anchor? Generic reasoning or intuition does not count.
 
-4. SYNTHESISE: Combine anchor + base rate + current evidence into a single probability (0.0–1.0).
-
+4. SYNTHESISE: Combine anchor + base rate + current evidence into a single probability.
+   If your evidence would push you more than 15pp from the market price, cap your
+   estimate at the boundary of the allowed range shown above.
+{anchor_range_reminder}
 5. CONFIDENCE — rate how certain you are:
    - HIGH: multiple independent sources agree, clear signal, you understand the situation well
    - MEDIUM: some evidence but meaningful uncertainty remains
