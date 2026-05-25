@@ -242,6 +242,9 @@ Follow these steps:
 
 Respond in EXACTLY this format and nothing else after it:
 I believe [question] has a likelihood `0.65` for outcome of `Yes`. Confidence: HIGH.
+
+IMPORTANT: The likelihood MUST be a decimal between 0.00 and 1.00 — NOT a percentage.
+Write `0.715` not `71.5`. Write `0.10` not `10`.
 """
 
     def one_best_trade(
