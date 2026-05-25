@@ -133,6 +133,37 @@ def check_polymarket_holders():
     assert r2.status_code == 200, f"holders HTTP {r2.status_code}"
     return {"condition_id": cid[:20] + "...", "holders_sample": str(r2.json())[:100]}
 
+def check_polymarket_leaderboard():
+    """Test whether the true leaderboard endpoint is accessible from this host."""
+    for sort_key in ("profitAndLoss", "profit"):
+        r = requests.get(
+            "https://data-api.polymarket.com/v1/leaderboard",
+            params={"limit": 5, "sortBy": sort_key, "sortDir": "desc"},
+            headers={"User-Agent": "PolymarketTradingBot/1.0"}, timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and data:
+                top = data[:3]
+                return [
+                    {
+                        "name": e.get("pseudonym") or e.get("name", ""),
+                        "profit": e.get("profit") or e.get("profitAndLoss") or e.get("pnl"),
+                        "wallet": (e.get("proxyWallet") or e.get("address") or "")[:14] + "...",
+                    }
+                    for e in top
+                ]
+    # Fallback: try /rankings
+    r2 = requests.get(
+        "https://data-api.polymarket.com/rankings",
+        params={"limit": 5, "sortBy": "profit", "sortDir": "desc"},
+        headers={"User-Agent": "PolymarketTradingBot/1.0"}, timeout=10,
+    )
+    assert r2.status_code == 200, f"Both /v1/leaderboard and /rankings blocked (HTTP {r2.status_code})"
+    data2 = r2.json()
+    assert isinstance(data2, list) and data2, "empty response"
+    return [{"entry": str(e)[:80]} for e in data2[:3]]
+
 
 # ── Key-required sources ──────────────────────────────────────────────────
 
@@ -224,8 +255,9 @@ if __name__ == "__main__":
     test("Reddit",                check_reddit)
     test("Wikipedia pageviews",   check_wikipedia)
     test("ESPN",                  check_espn)
-    test("Polymarket /trades",    check_polymarket_trades)
-    test("Polymarket /holders",   check_polymarket_holders)
+    test("Polymarket /trades",       check_polymarket_trades)
+    test("Polymarket /holders",      check_polymarket_holders)
+    test("Polymarket /leaderboard",  check_polymarket_leaderboard)
 
     print("\n── API-key sources ─────────────────────────────────────────")
     test("Tavily",       check_tavily,     required_key="TAVILY_API_KEY")
