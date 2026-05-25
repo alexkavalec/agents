@@ -960,37 +960,8 @@ class DataEnricher:
     # ══════════════════════════════════════════════════════════════════
 
     def _get_kalshi(self, query: str, max_results: int = 3) -> list:
-        # Kalshi trading API requires auth even for reads — skip without a key
-        if not self.kalshi_key:
-            return []
-        try:
-            # Kalshi v2 uses "Token" auth scheme, not "Bearer"
-            resp = requests.get(
-                "https://trading-api.kalshi.com/trade-api/v2/markets",
-                params={"limit": 10, "status": "open", "keyword": query},
-                headers={"Accept": "application/json",
-                         "Authorization": f"Token {self.kalshi_key}"},
-                timeout=8,
-            )
-            if resp.status_code != 200:
-                print(f"  [DataEnricher] Kalshi HTTP {resp.status_code} — skipping")
-                return []
-            results = []
-            for m in resp.json().get("markets", [])[:max_results]:
-                raw = m.get("yes_ask") or m.get("last_price") or m.get("yes_bid")
-                if raw is None:
-                    continue
-                yes_pct = raw / 100 if raw > 1 else raw
-                results.append({
-                    "title": m.get("title", ""),
-                    "yes_pct": round(yes_pct, 3),
-                    "volume": m.get("volume", 0),
-                    "close_time": (m.get("close_time") or "")[:10],
-                })
-            return results
-        except Exception as e:
-            print(f"  [DataEnricher] Kalshi error: {e}")
-            return []
+        # Kalshi requires RSA request signing — not implemented. Use Manifold instead.
+        return []
 
     # ══════════════════════════════════════════════════════════════════
     # Manifold Markets — free prediction market (calibration, no key)
