@@ -408,22 +408,15 @@ class Executor:
         prompt = self.prompter.superforecaster(question, description, outcomes,
                                                lessons=lessons, live_context=live_context,
                                                market_prices=outcome_prices)
-        print()
-        print("... prompting ... ", prompt)
-        print()
         result = self.llm.invoke(prompt)
         superforecaster_content = result.content
 
-        print("result: ", superforecaster_content)
-        print()
+        print(f"  Superforecaster: {superforecaster_content[:120]}")
         prompt = self.prompter.one_best_trade(superforecaster_content, outcomes, outcome_prices)
-        print("... prompting ... ", prompt)
-        print()
         result = self.llm.invoke(prompt)
         trade_content = result.content
 
-        print("result: ", trade_content)
-        print()
+        print(f"  Trade signal:    {trade_content[:120]}")
 
         # If the LLM omitted price:, inject it from the superforecaster estimate so
         # the edge check in trade.py always has a probability to compare against.
@@ -443,9 +436,6 @@ class Executor:
 
     def source_best_market_to_create(self, filtered_markets) -> str:
         prompt = self.prompter.create_new_market(filtered_markets)
-        print()
-        print("... prompting ... ", prompt)
-        print()
         result = self.llm.invoke(prompt)
         content = result.content
         return content
