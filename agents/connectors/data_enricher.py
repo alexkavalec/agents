@@ -234,6 +234,25 @@ class DataEnricher:
                 }
         return {}
 
+    def _api_sports_find_player(self, host: str, name: str) -> int:
+        """Search for a tennis player by name. Returns player ID or 0."""
+        data = self._api_sports_get(host, "players", {"search": name})
+        players = data.get("response", [])
+        return players[0].get("id", 0) if players else 0
+
+    def _api_sports_player_ranking(self, host: str, player_id: int) -> dict:
+        """Get current ATP/WTA ranking for a player."""
+        data = self._api_sports_get(host, "rankings", {"player": player_id})
+        resp = data.get("response", [])
+        if not resp:
+            return {}
+        r = resp[0]
+        return {
+            "rank": r.get("position"),
+            "points": r.get("points"),
+            "player": r.get("player", {}).get("name", ""),
+        }
+
     def _get_api_sports(self, question: str) -> dict:
         if not self.api_sports_key:
             return {}
@@ -247,34 +266,48 @@ class DataEnricher:
             return {}
 
         print(f"  [API-Sports] League {league_id} @ {host.split('//')[1]}")
-
-        # Extract capitalised words as candidate team names
-        candidates = re.findall(r'\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b', question)
-        team_ids = {}
-        for name in dict.fromkeys(candidates):  # dedupe, preserve order
-            if name.lower() in STOP_WORDS:
-                continue
-            tid = self._api_sports_find_team(host, name)
-            if tid:
-                team_ids[name] = tid
-
-        print(f"  [API-Sports] Teams matched: {list(team_ids.keys()) or 'none'}")
+        is_tennis = "tennis" in host
 
         result = {
             "host": host, "league_id": league_id,
             "fixture_id": 0, "predictions": {}, "odds": {}, "teams": {},
         }
 
-        if team_ids:
-            first_id = next(iter(team_ids.values()))
-            fid = self._api_sports_find_fixture(host, league_id, first_id)
-            result["fixture_id"] = fid
-            if fid:
-                print(f"  [API-Sports] Fixture {fid}: fetching predictions + odds...")
-                result["predictions"] = self._api_sports_predictions(host, fid)
-                result["odds"]        = self._api_sports_odds(host, fid)
-            for name, tid in team_ids.items():
-                result["teams"][name] = self._api_sports_standing(host, league_id, tid)
+        # Extract capitalised words as candidate player/team names
+        candidates = re.findall(r'\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b', question)
+        candidates = [n for n in dict.fromkeys(candidates) if n.lower() not in STOP_WORDS]
+
+        if is_tennis:
+            # Tennis: search for players, get their rankings
+            player_ids = {}
+            for name in candidates:
+                pid = self._api_sports_find_player(host, name)
+                if pid:
+                    player_ids[name] = pid
+            print(f"  [API-Sports] Tennis players matched: {list(player_ids.keys()) or 'none'}")
+            for name, pid in player_ids.items():
+                ranking = self._api_sports_player_ranking(host, pid)
+                if ranking:
+                    result["teams"][name] = {"rank": ranking.get("rank"),
+                                             "points": ranking.get("points")}
+        else:
+            # Football/basketball/etc: search for teams
+            team_ids = {}
+            for name in candidates:
+                tid = self._api_sports_find_team(host, name)
+                if tid:
+                    team_ids[name] = tid
+            print(f"  [API-Sports] Teams matched: {list(team_ids.keys()) or 'none'}")
+            if team_ids:
+                first_id = next(iter(team_ids.values()))
+                fid = self._api_sports_find_fixture(host, league_id, first_id)
+                result["fixture_id"] = fid
+                if fid:
+                    print(f"  [API-Sports] Fixture {fid}: fetching predictions + odds...")
+                    result["predictions"] = self._api_sports_predictions(host, fid)
+                    result["odds"]        = self._api_sports_odds(host, fid)
+                for name, tid in team_ids.items():
+                    result["teams"][name] = self._api_sports_standing(host, league_id, tid)
 
         return result
 
@@ -811,21 +844,27 @@ class DataEnricher:
         try:
             resp = requests.get(
                 "https://www.reddit.com/search.json",
-                params={"q": query, "sort": "new", "limit": max_posts, "t": "week"},
+                params={"q": query, "sort": "relevance", "limit": max_posts * 3, "t": "week"},
                 headers={"User-Agent": "PolymarketTradingBot/1.0"},
                 timeout=8,
             )
             if resp.status_code != 200:
                 return []
-            return [
-                {
-                    "subreddit": p["data"].get("subreddit", ""),
-                    "title": p["data"].get("title", ""),
-                    "score": p["data"].get("score", 0),
-                    "comments": p["data"].get("num_comments", 0),
-                }
-                for p in resp.json().get("data", {}).get("children", [])
-            ]
+            # Filter: keep only posts where at least one query keyword appears in the title
+            query_words = {w.lower() for w in query.split() if len(w) > 3}
+            posts = []
+            for p in resp.json().get("data", {}).get("children", []):
+                title = p["data"].get("title", "").lower()
+                if any(w in title for w in query_words):
+                    posts.append({
+                        "subreddit": p["data"].get("subreddit", ""),
+                        "title": p["data"].get("title", ""),
+                        "score": p["data"].get("score", 0),
+                        "comments": p["data"].get("num_comments", 0),
+                    })
+                if len(posts) >= max_posts:
+                    break
+            return posts
         except Exception as e:
             print(f"  [DataEnricher] Reddit error: {e}")
             return []
@@ -925,11 +964,12 @@ class DataEnricher:
         if not self.kalshi_key:
             return []
         try:
+            # Kalshi v2 uses "Token" auth scheme, not "Bearer"
             resp = requests.get(
                 "https://trading-api.kalshi.com/trade-api/v2/markets",
                 params={"limit": 10, "status": "open", "keyword": query},
                 headers={"Accept": "application/json",
-                         "Authorization": f"Bearer {self.kalshi_key}"},
+                         "Authorization": f"Token {self.kalshi_key}"},
                 timeout=8,
             )
             if resp.status_code != 200:
