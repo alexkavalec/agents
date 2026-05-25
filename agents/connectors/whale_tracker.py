@@ -1,18 +1,20 @@
 """
-WhaleTracker — discovers active Polymarket traders dynamically from recent trade flow
-and surfaces their positions as smart-money signals.
+WhaleTracker — discovers top Polymarket traders and surfaces their positions as
+smart-money signals.
 
 Two-stage approach:
-  1. Pre-selection: /trades global feed → find most active recent traders → fetch their
-     open positions → consensus signals used to boost whale-signalled markets in the
-     candidate list and inject keyword-matched context into the superforecaster prompt.
+  1. Pre-selection: tries /v1/leaderboard (ranked by all-time PnL) first; if blocked,
+     falls back to /trades global feed scanning for largest recent dollar volumes.
+     Fetches open positions for top traders → consensus signals used to boost
+     whale-signalled markets and inject context into the superforecaster prompt.
   2. Post-selection: /holders?market=CONDITION_ID → direct top-holder snapshot for the
      specific market being analyzed, injected as a calibration block in the prompt.
 
 All endpoints are public — no API key required.
-  data-api.polymarket.com/trades    — recent global trade feed
-  data-api.polymarket.com/positions — open positions for a given address
-  data-api.polymarket.com/holders   — top holders for a given market (conditionId)
+  data-api.polymarket.com/v1/leaderboard — ranked leaderboard (profit/volume)
+  data-api.polymarket.com/trades         — recent global trade feed (fallback)
+  data-api.polymarket.com/positions      — open positions for a given address
+  data-api.polymarket.com/holders        — top holders for a given market (conditionId)
 """
 
 import requests
@@ -20,11 +22,14 @@ from collections import defaultdict
 
 DATA_API = "https://data-api.polymarket.com"
 
-# Minimum dollar volume in recent trades to qualify as a whale
-MIN_WHALE_VOLUME = 50.0
+# Minimum all-time profit to qualify as a true whale from the leaderboard ($50k+)
+MIN_LEADERBOARD_PROFIT = 50_000.0
+
+# Minimum dollar volume in recent trades to qualify as a whale (fallback path)
+MIN_WHALE_VOLUME = 1_000.0
 
 # Minimum current position value to count as meaningful smart-money signal
-MIN_POSITION_VALUE = 10.0
+MIN_POSITION_VALUE = 50.0
 
 # Price drift cap — skip if price already moved >40% from whale's avg entry
 MAX_PRICE_DRIFT = 0.40
@@ -77,13 +82,76 @@ def _categorise(holder: dict, yes_list: list, no_list: list) -> None:
 
 class WhaleTracker:
 
+    def get_top_traders_from_leaderboard(self, n: int = 50) -> list:
+        """
+        Fetch the true Polymarket leaderboard (ranked by all-time profit) via
+        /v1/leaderboard. Returns top N traders with address, name, and profit.
+        Returns empty list if the endpoint is blocked or unavailable.
+        """
+        # Try various sort params — API may use profitAndLoss or profit
+        for sort_key in ("profitAndLoss", "profit", "pnl"):
+            data = _req(
+                f"{DATA_API}/v1/leaderboard",
+                {"limit": n, "sortBy": sort_key, "sortDir": "desc"},
+            )
+            if isinstance(data, list) and data:
+                break
+            # Also try without /v1 prefix
+            data = _req(
+                f"{DATA_API}/rankings",
+                {"limit": n, "sortBy": sort_key, "sortDir": "desc"},
+            )
+            if isinstance(data, list) and data:
+                break
+        else:
+            data = None
+
+        if not isinstance(data, list) or not data:
+            return []
+
+        traders = []
+        for entry in data:
+            addr = (
+                entry.get("proxyWallet")
+                or entry.get("address")
+                or entry.get("user")
+                or ""
+            )
+            if not addr:
+                continue
+            try:
+                profit = float(
+                    entry.get("profit")
+                    or entry.get("profitAndLoss")
+                    or entry.get("pnl")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                profit = 0.0
+            if profit < MIN_LEADERBOARD_PROFIT:
+                continue
+            name = (
+                entry.get("pseudonym")
+                or entry.get("name")
+                or entry.get("username")
+                or ""
+            )
+            traders.append({"address": addr, "volume": profit, "name": name, "source": "leaderboard"})
+
+        if traders:
+            print(f"  [WhaleTracker] Leaderboard: {len(traders)} top traders (≥${MIN_LEADERBOARD_PROFIT:,.0f} profit):")
+            for t in traders[:10]:
+                label = t["name"] or t["address"][:12] + "..."
+                print(f"    ${t['volume']:>12,.0f} profit — {label}")
+        return traders
+
     def get_top_traders_from_trades(self, n: int = 30) -> list:
         """
-        Discover active traders dynamically from the recent global trade feed.
-        No leaderboard endpoint needed — self-updating each cycle.
-        Returns top N traders sorted by total recent dollar volume.
+        Fallback: discover active traders from the recent global trade feed.
+        Scans 2000 recent trades and returns highest USD-volume traders.
         """
-        data = _req(f"{DATA_API}/trades", {"limit": 500, "takerOnly": "false"})
+        # Fetch a larger window to capture infrequent large traders
+        data = _req(f"{DATA_API}/trades", {"limit": 2000, "takerOnly": "false"})
         if not isinstance(data, list) or not data:
             return []
 
@@ -103,7 +171,7 @@ class WhaleTracker:
                 name_by_wallet[wallet] = name
 
         traders = [
-            {"address": addr, "volume": vol, "name": name_by_wallet.get(addr, "")}
+            {"address": addr, "volume": vol, "name": name_by_wallet.get(addr, ""), "source": "trades"}
             for addr, vol in volume_by_wallet.items()
             if vol >= MIN_WHALE_VOLUME
         ]
@@ -111,10 +179,10 @@ class WhaleTracker:
 
         if traders:
             top = traders[:n]
-            print(f"  [WhaleTracker] {len(traders)} active traders found, top {len(top)}:")
+            print(f"  [WhaleTracker] Trade feed: {len(traders)} active traders, top {len(top)} (≥${MIN_WHALE_VOLUME:,.0f}):")
             for t in top[:10]:
-                label = t["name"] or t["address"][:10] + "..."
-                print(f"    ${t['volume']:>7,.0f} vol — {label}")
+                label = t["name"] or t["address"][:12] + "..."
+                print(f"    ${t['volume']:>9,.0f} vol — {label}")
         return traders[:n]
 
     def get_positions(self, address: str) -> list:
@@ -131,11 +199,15 @@ class WhaleTracker:
             and not p.get("redeemable", False)
         ]
 
-    def get_whale_signals(self, top_n: int = 25) -> list:
+    def get_whale_signals(self, top_n: int = 50) -> list:
         """
-        Scan top recent traders' positions and return consensus signals:
-        markets where ≥MIN_WHALES_AGREE independent active traders hold the same side
+        Scan top traders' positions and return consensus signals:
+        markets where ≥MIN_WHALES_AGREE independent whales hold the same side
         AND the price hasn't drifted more than MAX_PRICE_DRIFT from their avg entry.
+
+        Discovery order:
+          1. /v1/leaderboard — true top traders by all-time profit (the real whales)
+          2. /trades fallback — recent high-volume traders if leaderboard is blocked
 
         Returns list of dicts sorted by (whale_count DESC, combined_volume DESC):
         {
@@ -144,12 +216,18 @@ class WhaleTracker:
           whale_count, whale_volume_total, whale_profit_total (= volume, for compat)
         }
         """
-        traders = self.get_top_traders_from_trades(top_n)
+        # Try leaderboard first (real whales), fall back to trades
+        traders = self.get_top_traders_from_leaderboard(top_n)
+        source = "leaderboard"
         if not traders:
-            print("  [WhaleTracker] No active traders found in recent trade feed.")
+            print("  [WhaleTracker] Leaderboard unavailable — falling back to trade feed scan.")
+            traders = self.get_top_traders_from_trades(top_n)
+            source = "trades"
+        if not traders:
+            print("  [WhaleTracker] No traders found from either source.")
             return []
 
-        print(f"  [WhaleTracker] Scanning {len(traders)} top traders for open positions...")
+        print(f"  [WhaleTracker] Scanning {len(traders)} traders [{source}] for open positions...")
 
         buckets: dict = defaultdict(lambda: {
             "title": "", "asset": "", "side": "",
@@ -293,7 +371,7 @@ class WhaleTracker:
         if not matched:
             return ""
 
-        lines = ["\nSMART-MONEY SIGNAL — top active traders currently hold:"]
+        lines = ["\nSMART-MONEY SIGNAL — top leaderboard whales currently hold:"]
         for s in matched:
             drift_note = (
                 f"{s['price_drift']:.0%} drift from entry"
@@ -301,14 +379,14 @@ class WhaleTracker:
                 else "very fresh — price barely moved"
             )
             lines.append(
-                f"  • {s['whale_count']} active traders: {s['side'].upper()} "
+                f"  • {s['whale_count']} whale(s): {s['side'].upper()} "
                 f"@ avg entry {s['avg_entry']:.3f}  (market now {s['cur_price']:.3f}, {drift_note})"
-                f"  — combined recent volume: ${s['whale_volume_total']:,}"
+                f"  — combined profit/volume: ${s['whale_volume_total']:,}"
             )
         lines += [
             "",
-            "  NOTE: these traders have been recently active with significant volume.",
-            "  Weight this as a moderate signal — active traders may have better research.",
+            "  NOTE: these are top-ranked Polymarket traders by all-time profit.",
+            "  Weight this as a STRONG signal — these traders have demonstrated edge.",
             "  Cross-reference with the holder snapshot and other context below.\n",
         ]
         return "\n".join(lines)
