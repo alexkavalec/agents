@@ -998,8 +998,10 @@ class DataEnricher:
     def _get_google_trends(self, query: str) -> dict:
         try:
             from pytrends.request import TrendReq
+            # Trends works best with 1-2 keywords — long queries return zero interest
+            trend_query = " ".join(query.split()[:2])
             pt = TrendReq(hl="en-US", tz=0, timeout=(8, 8))
-            pt.build_payload([query[:100]], timeframe="now 7-d")
+            pt.build_payload([trend_query], timeframe="now 7-d")
             df = pt.interest_over_time()
             if df.empty:
                 return {}
