@@ -457,14 +457,19 @@ class Trader:
                 order_type=OrderType.FOK,
             )
             print(f"  {reason} executed: {resp}")
-            # Prevent re-entry on the same token this cycle
+            # Prevent re-entry on the same token this cycle.
+            # Only update an existing state file — never create one with balance=0,
+            # which would corrupt the daily spend cap calculation.
             try:
-                state = self._load_state(0)
-                traded_tokens = state.get("traded_tokens", [])
-                if token_id and token_id not in traded_tokens:
-                    traded_tokens.append(token_id)
-                    state["traded_tokens"] = traded_tokens
-                    self._save_state(state)
+                if token_id and os.path.exists(STATE_FILE):
+                    with open(STATE_FILE, "r") as f:
+                        state = json.load(f)
+                    if state.get("date") == self._today():
+                        traded = state.get("traded_tokens", [])
+                        if token_id not in traded:
+                            traded.append(token_id)
+                            state["traded_tokens"] = traded
+                            self._save_state(state)
             except Exception:
                 pass
             if lesson_ctx:
