@@ -16,11 +16,12 @@ MIN_EDGE = 0.05              # strong mispricing: full-size trade
 MIN_EDGE_CONVICTION = 0.03  # high-confidence trade even with smaller edge: half-size
 MAX_TRADE_FRACTION = 0.10   # never stake more than 10% of current balance on one trade
 CONVICTION_TRADE_FRACTION = 0.05  # half-size for conviction trades
-MAX_OPEN_POSITIONS = 5     # don't open a new position if this many are already open
+MAX_OPEN_POSITIONS = 25    # don't open a new position if this many are already open
 DAILY_SPEND_FRACTION = 0.30  # stop opening trades once 30% of starting daily balance spent
 DAILY_LOSS_FRACTION = 0.15   # stop for the day if balance drops 15% below the day's start
 ABSOLUTE_MIN_TRADE = 1.0   # Polymarket order minimum (~$1). Below this, skip.
 TRADE_COOLDOWN_MINUTES = 55  # minimum gap between trades — blocks back-to-back redeploy trades
+MAX_EDGE = 0.40              # reject trades where AI diverges > 40pp from market — likely hallucination
 STATE_FILE = "trader_daily_state.json"  # project root survives Railway restarts better than /tmp
 
 _CORR_STOP = {
@@ -324,6 +325,12 @@ class Trader:
             confidence = self._parse_confidence(best_trade)
             print(f"Edge check: estimate={prob:.3f} market={price:.3f} edge={edge:.3f} confidence={confidence}")
 
+            # Hard cap: an edge > 40pp almost always means the AI hallucinated a probability
+            # that the live Polymarket crowd would never price. Reject immediately.
+            if edge > MAX_EDGE:
+                print(f"EDGE REJECTED: edge {edge:.3f} > {MAX_EDGE} cap — AI estimate likely wrong. Skipping.")
+                return
+
             # Two-tier system:
             #   Tier 1 — strong mispricing  (edge >= 5%): full-size trade
             #   Tier 2 — conviction trade   (edge >= 3% + HIGH confidence): half-size trade
@@ -519,8 +526,26 @@ class Trader:
                 if abs(pnl_pct) < POSITION_REVIEW_MIN_MOVE:
                     continue
 
-                # Gate 2: significant move — re-run the AI before doing anything
-                print(f"  Significant move — running AI re-evaluation...")
+                # STOP LOSS: close unconditionally — no AI re-eval.
+                # The AI has already been shown to override -60% losses with optimistic forecasts.
+                # At this loss level, the original thesis is broken regardless of AI opinion.
+                if pnl_pct <= POSITION_STOP_LOSS_LOSS:
+                    lesson_ctx = {
+                        "question": title,
+                        "side": outcome,
+                        "entry_price": avg_price,
+                        "pnl_pct": pnl_pct,
+                    }
+                    print(f"  STOP LOSS (unconditional): down {pnl_pct:+.1%} — closing without AI re-eval.")
+                    self._close_position(asset, size, "STOP LOSS", lesson_ctx)
+                    continue
+
+                # TAKE PROFIT: only close if AI confirms edge has collapsed.
+                # Holding a winner that's still mispriced is fine.
+                if pnl_pct < POSITION_TAKE_PROFIT_GAIN:
+                    continue
+
+                print(f"  Take-profit threshold reached ({pnl_pct:+.1%}) — running AI re-evaluation...")
                 market_data = self.polymarket.get_market(asset)
                 if not market_data:
                     print(f"  Could not fetch market data, holding.")
@@ -543,25 +568,18 @@ class Trader:
                 else:
                     current_edge = (1.0 - ai_p_yes) - current_token_price
 
-                # Gate 3: only act if the edge has genuinely collapsed.
-                # If the AI still sees a strong edge, hold regardless of price move.
                 if abs(current_edge) >= POSITION_ACTION_EDGE_MAX:
-                    print(f"  AI still sees edge {current_edge:+.2f} — holding despite {pnl_pct:+.1%} move.")
+                    print(f"  AI still sees edge {current_edge:+.2f} — holding despite {pnl_pct:+.1%} gain.")
                     continue
 
-                # Both gates passed: price moved hard AND AI confirms thesis is broken
                 lesson_ctx = {
                     "question": question,
                     "side": outcome,
                     "entry_price": avg_price,
                     "pnl_pct": pnl_pct,
                 }
-                if pnl_pct >= POSITION_TAKE_PROFIT_GAIN:
-                    print(f"  TAKE PROFIT: up {pnl_pct:+.1%}, AI edge = {current_edge:+.2f} (closed)")
-                    self._close_position(asset, size, "TAKE PROFIT", lesson_ctx)
-                elif pnl_pct <= POSITION_STOP_LOSS_LOSS:
-                    print(f"  STOP LOSS: down {pnl_pct:+.1%}, AI confirms thesis broken (edge = {current_edge:+.2f})")
-                    self._close_position(asset, size, "STOP LOSS", lesson_ctx)
+                print(f"  TAKE PROFIT: up {pnl_pct:+.1%}, AI edge = {current_edge:+.2f} (closed)")
+                self._close_position(asset, size, "TAKE PROFIT", lesson_ctx)
 
         except Exception as e:
             print(f"maintain_positions error: {e}")
