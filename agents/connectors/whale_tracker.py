@@ -100,15 +100,18 @@ class WhaleTracker:
 
     def get_top_traders_from_leaderboard(self, n: int = 50) -> list:
         """
-        Fetch top 10 traders from each of the four leaderboard time windows
-        (today, weekly, monthly, all-time), deduplicate by wallet, and return
-        everyone with profit ≥ MIN_LEADERBOARD_PROFIT.
+        Fetch top 10 traders from each of the four leaderboard windows
+        (today / weekly / monthly / all-time), deduplicate by wallet address.
+        No profit floor — every slot from every window is included.
         """
         windows = ["today", "weekly", "monthly", "all"]
-        seen: dict = {}  # proxyWallet → best entry
+        window_labels = {"today": "T", "weekly": "W", "monthly": "M", "all": "A"}
+        seen: dict = {}       # addr → trader dict
+        appearances: dict = {}  # addr → list of window labels
 
         for window in windows:
             entries = self._fetch_leaderboard_window(window, top_n=10)
+            tag = window_labels[window]
             for entry in entries:
                 addr = (
                     entry.get("proxyWallet")
@@ -127,7 +130,10 @@ class WhaleTracker:
                     )
                 except (TypeError, ValueError):
                     profit = 0.0
-                # Keep the entry with the highest profit figure seen across windows
+
+                appearances.setdefault(addr, [])
+                appearances[addr].append(tag)
+
                 if addr not in seen or profit > seen[addr]["volume"]:
                     name = (
                         entry.get("userName")
@@ -138,14 +144,21 @@ class WhaleTracker:
                     )
                     seen[addr] = {"address": addr, "volume": profit, "name": name, "source": "leaderboard"}
 
-        traders = [t for t in seen.values() if t["volume"] >= MIN_LEADERBOARD_PROFIT]
+        traders = list(seen.values())
         traders.sort(key=lambda t: t["volume"], reverse=True)
 
-        if traders:
-            print(f"  [WhaleTracker] Leaderboard: {len(traders)} top traders across 4 windows (≥${MIN_LEADERBOARD_PROFIT:,.0f} profit):")
-            for t in traders[:10]:
-                label = t["name"] or t["address"][:12] + "..."
-                print(f"    ${t['volume']:>12,.0f} profit — {label}")
+        total_slots = sum(len(v) for v in appearances.values())
+        duplicates  = sum(len(v) - 1 for v in appearances.values() if len(v) > 1)
+        unique      = len(traders)
+        print(f"  ┌─ WHALE LEADERBOARD ── {unique} unique traders ({total_slots} slots across 4 windows, {duplicates} cross-window dupes)")
+        print(f"  │  T=Today  W=Weekly  M=Monthly  A=All-time")
+        print(f"  │")
+        for t in traders:
+            tags = "+".join(appearances.get(t["address"], []))
+            label = t["name"] or t["address"][:14] + "..."
+            multi = " ◆" if len(appearances.get(t["address"], [])) > 1 else ""
+            print(f"  │  [{tags:7s}]  ${t['volume']:>12,.0f}  {label}{multi}")
+        print(f"  └─────────────────────────────────────────────────")
         return traders
 
     def get_top_traders_from_trades(self, n: int = 30) -> list:
