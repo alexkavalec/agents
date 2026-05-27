@@ -29,6 +29,9 @@ _CORR_STOP = {
     "have", "has", "do", "does", "did", "would", "could", "should", "may",
     "win", "lose", "this", "that", "in", "on", "at", "by", "for", "to",
     "of", "and", "or", "not", "yes", "no", "its", "their", "2025", "2026", "2027",
+    # generic time/event words that span unrelated markets
+    "meeting", "june", "july", "august", "september", "october", "november",
+    "december", "january", "february", "march", "april",
 }
 
 # Position management — thresholds before ANY action is even considered.
@@ -171,7 +174,7 @@ class Trader:
                 print(f"Could not read balance ({e}); aborting this run for safety.")
                 return
             from agents.memory.trade_log import get_stats
-            from agents.memory.scoreboard import resolve_completed, print_scoreboard
+            from agents.memory.scoreboard import resolve_completed, get_scoreboard_line
             resolve_completed(self.polymarket)
 
             state = self._load_state(balance)
@@ -181,19 +184,21 @@ class Trader:
             loss_floor  = start_bal * (1 - DAILY_LOSS_FRACTION)
             open_count  = self._count_open_positions()
 
-            # ── CYCLE HEADER ────────────────────────────────────────────────
-            print(f"")
-            print(f"  ┌─ CYCLE SUMMARY ───────────────────────────────────────")
-            print(f"  │  Balance : ${balance:.2f}  (start ${start_bal:.2f})")
-            print(f"  │  Spent   : ${spent_today:.2f} / ${spend_cap:.2f} daily cap")
-            print(f"  │  Positions: {open_count if open_count >= 0 else '?'} / {MAX_OPEN_POSITIONS} max")
-            print_scoreboard()
+            # ── CYCLE HEADER — printed as one call so Railway log collector keeps it intact ──
             stats = get_stats()
-            print(f"  │  Trades  : {stats['total_attempts']} attempts | {stats['filled']} filled | "
-                  f"{stats['fok_killed']} FOK killed | "
-                  f"{stats['closed_profit']}W {stats['closed_loss']}L")
-            print(f"  └───────────────────────────────────────────────────────")
-            print(f"")
+            print("\n".join([
+                "",
+                "  ┌─ CYCLE SUMMARY ───────────────────────────────────────",
+                f"  │  Balance : ${balance:.2f}  (start ${start_bal:.2f})",
+                f"  │  Spent   : ${spent_today:.2f} / ${spend_cap:.2f} daily cap",
+                f"  │  Positions: {open_count if open_count >= 0 else '?'} / {MAX_OPEN_POSITIONS} max",
+                get_scoreboard_line(),
+                f"  │  Trades  : {stats['total_attempts']} attempts | {stats['filled']} filled | "
+                f"{stats['fok_killed']} FOK killed | "
+                f"{stats['closed_profit']}W {stats['closed_loss']}L",
+                "  └───────────────────────────────────────────────────────",
+                "",
+            ]))
 
             if balance <= loss_floor:
                 print(f"  ✗ DAILY LOSS LIMIT — balance ${balance:.2f} hit floor ${loss_floor:.2f}. Stopping.")
@@ -356,12 +361,12 @@ class Trader:
             trade_amount = min(float(amount) if amount else size_cap, size_cap, remaining_daily)
 
             if trade_amount < ABSOLUTE_MIN_TRADE:
-                # Bump conviction trades up to minimum if the full cap allows it
-                if remaining_daily >= ABSOLUTE_MIN_TRADE and full_max >= ABSOLUTE_MIN_TRADE:
+                # Bump to minimum if the wallet and daily budget both allow a $1 order
+                if remaining_daily >= ABSOLUTE_MIN_TRADE and balance >= ABSOLUTE_MIN_TRADE:
                     print(f"  Size bumped ${trade_amount:.2f} → ${ABSOLUTE_MIN_TRADE:.2f} (minimum order)")
                     trade_amount = ABSOLUTE_MIN_TRADE
                 else:
-                    print(f"  ✗ Trade size ${trade_amount:.2f} below ${ABSOLUTE_MIN_TRADE} minimum — cap too small. Skipping.")
+                    print(f"  ✗ Trade size ${trade_amount:.2f} below ${ABSOLUTE_MIN_TRADE} minimum — balance too low. Skipping.")
                     return
             print(f"  Size: ${trade_amount:.2f}  (cap ${size_cap:.2f}, daily room ${remaining_daily:.2f})")
 
