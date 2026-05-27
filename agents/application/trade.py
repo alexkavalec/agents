@@ -170,41 +170,40 @@ class Trader:
             except Exception as e:
                 print(f"Could not read balance ({e}); aborting this run for safety.")
                 return
-            print(f"Balance: ${balance:.2f}")
-
             from agents.memory.trade_log import get_stats
             from agents.memory.scoreboard import resolve_completed, print_scoreboard
             resolve_completed(self.polymarket)
-            print_scoreboard()
-            stats = get_stats()
-            print(f"Memory: {stats['total_attempts']} trade attempts | "
-                  f"{stats['filled']} filled | {stats['fok_killed']} FOK killed | "
-                  f"{stats['closed_profit']} profit exits | {stats['closed_loss']} loss exits")
-
-            self.maintain_positions()
 
             state = self._load_state(balance)
-            start_bal = state["start_balance"]
+            start_bal  = state["start_balance"]
             spent_today = state["spent"]
+            spend_cap   = start_bal * DAILY_SPEND_FRACTION
+            loss_floor  = start_bal * (1 - DAILY_LOSS_FRACTION)
+            open_count  = self._count_open_positions()
 
-            loss_floor = start_bal * (1 - DAILY_LOSS_FRACTION)
+            # ── CYCLE HEADER ────────────────────────────────────────────────
+            print(f"")
+            print(f"  ┌─ CYCLE SUMMARY ───────────────────────────────────────")
+            print(f"  │  Balance : ${balance:.2f}  (start ${start_bal:.2f})")
+            print(f"  │  Spent   : ${spent_today:.2f} / ${spend_cap:.2f} daily cap")
+            print(f"  │  Positions: {open_count if open_count >= 0 else '?'} / {MAX_OPEN_POSITIONS} max")
+            print_scoreboard()
+            stats = get_stats()
+            print(f"  │  Trades  : {stats['total_attempts']} attempts | {stats['filled']} filled | "
+                  f"{stats['fok_killed']} FOK killed | "
+                  f"{stats['closed_profit']}W {stats['closed_loss']}L")
+            print(f"  └───────────────────────────────────────────────────────")
+            print(f"")
+
             if balance <= loss_floor:
-                print(f"DAILY LOSS LIMIT hit (balance ${balance:.2f} <= floor ${loss_floor:.2f}). Stopping for the day.")
+                print(f"  ✗ DAILY LOSS LIMIT — balance ${balance:.2f} hit floor ${loss_floor:.2f}. Stopping.")
                 return
-
-            spend_cap = start_bal * DAILY_SPEND_FRACTION
             if spent_today >= spend_cap:
-                print(f"DAILY SPEND CAP hit (spent ${spent_today:.2f} >= cap ${spend_cap:.2f}). Stopping for the day.")
+                print(f"  ✗ DAILY SPEND CAP — spent ${spent_today:.2f} of ${spend_cap:.2f}. Stopping.")
                 return
-
-            open_count = self._count_open_positions()
-            if open_count >= 0:
-                print(f"Open positions: {open_count}")
-                if open_count >= MAX_OPEN_POSITIONS:
-                    print(f"MAX OPEN POSITIONS reached ({open_count}/{MAX_OPEN_POSITIONS}). Skipping.")
-                    return
-            else:
-                print("Open positions: unknown (could not fetch) - proceeding cautiously.")
+            if open_count >= MAX_OPEN_POSITIONS:
+                print(f"  ✗ MAX POSITIONS — {open_count}/{MAX_OPEN_POSITIONS} open. Skipping.")
+                return
 
             # Cooldown: API-first (survives redeploys), state file as fallback
             elapsed = None
@@ -219,40 +218,42 @@ class Trader:
                         elapsed = (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(ltt)).total_seconds() / 60
                     except Exception:
                         pass
-            if elapsed is not None:
-                if elapsed < TRADE_COOLDOWN_MINUTES:
-                    print(f"COOLDOWN: last trade was {elapsed:.1f} min ago (need {TRADE_COOLDOWN_MINUTES} min). Skipping.")
-                    return
-                print(f"Cooldown OK: last trade was {elapsed:.1f} min ago.")
+            if elapsed is not None and elapsed < TRADE_COOLDOWN_MINUTES:
+                print(f"  ✗ COOLDOWN — last trade {elapsed:.0f} min ago (need {TRADE_COOLDOWN_MINUTES}). Skipping.")
+                return
 
-            # ── WHALE SCAN (fetch once — reused for context + candidate boosting) ──
+            # ── WHALE SCAN ───────────────────────────────────────────────────
             whale_signals = []
             try:
                 from agents.connectors.whale_tracker import WhaleTracker
                 whale_signals = WhaleTracker().get_whale_signals()
                 if whale_signals:
-                    print(f"  WHALE SIGNALS: {len(whale_signals)} consensus position(s) detected")
+                    print(f"  ┌─ WHALE SIGNALS ── {len(whale_signals)} consensus position(s)")
                     for s in whale_signals[:5]:
-                        print(f"    {s['whale_count']}x whales → {s['side'].upper()} "
-                              f"'{s['title'][:55]}' @ {s['avg_entry']:.3f} "
-                              f"(now {s['cur_price']:.3f}, drift {s['price_drift']:.0%})")
+                        print(f"  │  {s['whale_count']}x  {s['side'].upper():<20s}  "
+                              f"entry {s['avg_entry']:.3f} → now {s['cur_price']:.3f}  "
+                              f"({s['price_drift']:.0%} drift)  \"{s['title'][:40]}\"")
+                    if len(whale_signals) > 5:
+                        print(f"  │  … +{len(whale_signals)-5} more")
+                    print(f"  └───────────────────────────────────────────────────────")
+                    print(f"")
             except Exception as e:
                 print(f"  WhaleTracker error (non-fatal): {e}")
 
             events = self.polymarket.get_all_tradeable_events()
-            print(f"2. FOUND {len(events)} EVENTS")
             if not events:
-                print("No events found, exiting.")
+                print("  ✗ No events found. Skipping.")
                 return
+            print(f"  Scan: {len(events)} events", end="", flush=True)
 
             filtered_events = self.agent.filter_events_with_rag(events)
-            print(f"3. AI FILTERED TO {len(filtered_events)} EVENTS")
+            print(f" → {len(filtered_events)} after RAG filter", end="", flush=True)
 
             markets = self.agent.map_filtered_events_to_markets(filtered_events)
-            print(f"4. MAPPED TO {len(markets)} MARKETS")
             if not markets:
-                print("No markets, exiting.")
+                print(f" → 0 markets. Skipping.")
                 return
+            print(f" → {len(markets)} markets")
 
             # ── WHALE BOOST: promote whale-signalled markets to the top of the list ──
             # If a whale signal title matches a market question, move that market first
@@ -272,7 +273,7 @@ class Trader:
                 markets = sorted(markets, key=_whale_score, reverse=True)
                 boosted = sum(1 for m in markets if _whale_score(m) > 0)
                 if boosted:
-                    print(f"  WHALE BOOST: {boosted} market(s) promoted to top of candidate list")
+                    print(f"  Whale boost: {boosted} market(s) moved to top")
 
             # Collect open position titles for correlation filtering (soft + hard)
             open_pos_questions = []
@@ -284,12 +285,12 @@ class Trader:
                     if p.get("title") or p.get("question")
                 ]
             except Exception as e:
-                print(f"Could not fetch open positions for correlation check: {e}")
+                print(f"  Could not fetch open positions for correlation check: {e}")
 
             filtered_markets = self.agent.filter_markets(markets, open_positions=open_pos_questions)
-            print(f"5. AI FILTERED TO {len(filtered_markets)} MARKETS")
+            print(f"  → {len(filtered_markets)} candidate(s) after AI market selection")
             if not filtered_markets:
-                print("No filtered markets, exiting.")
+                print("  ✗ No markets passed AI filter. Skipping.")
                 return
 
             market = None
@@ -300,35 +301,35 @@ class Trader:
                     continue
                 correlated, matching = self._is_correlated_with_open(q, open_pos_questions)
                 if correlated:
-                    print(f"CORRELATION SKIP: '{q[:60]}' overlaps with held '{matching[:60]}'")
+                    print(f"  Correlation skip: '{q[:55]}' overlaps with '{matching[:40]}'")
                     continue
                 market = candidate
                 question = q
                 break
             if market is None:
-                print("All candidates correlated with open positions or missing question. Skipping.")
+                print("  ✗ All candidates correlated with open positions. Skipping.")
                 return
-            print(f"Selected: {question[:80]}")
+            print(f"")
+            print(f"  Selected: \"{question[:80]}\"")
 
             best_trade = self.agent.source_best_trade(market, whale_signals=whale_signals)
             if best_trade is None:
-                print("Could not generate trade (market missing question). Skipping.")
+                print("  ✗ Could not generate trade signal. Skipping.")
                 return
-            print(f"6. TRADE: {best_trade}")
 
             prob, price = self._parse_prob_and_price(best_trade, market)
             if prob is None or price is None:
-                print("Edge check: could not determine market price; skipping trade for safety.")
+                print("  ✗ Could not determine market price. Skipping.")
                 return
 
             edge = abs(prob - price)
             confidence = self._parse_confidence(best_trade)
-            print(f"Edge check: estimate={prob:.3f} market={price:.3f} edge={edge:.3f} confidence={confidence}")
+            print(f"  Forecast: {prob:.3f}  Market: {price:.3f}  Edge: {edge:+.3f}  [{confidence}]")
 
             # Hard cap: an edge > 40pp almost always means the AI hallucinated a probability
             # that the live Polymarket crowd would never price. Reject immediately.
             if edge > MAX_EDGE:
-                print(f"EDGE REJECTED: edge {edge:.3f} > {MAX_EDGE} cap — AI estimate likely wrong. Skipping.")
+                print(f"  ✗ Edge {edge:.3f} exceeds {MAX_EDGE} cap — likely AI hallucination. Skipping.")
                 return
 
             # Two-tier system:
@@ -336,14 +337,14 @@ class Trader:
             #   Tier 2 — conviction trade   (edge >= 3% + HIGH confidence): half-size trade
             conviction_trade = False
             if edge >= MIN_EDGE:
-                print(f"STRONG EDGE ({edge:.3f} >= {MIN_EDGE}). Full-size trade.")
+                print(f"  → STRONG EDGE ({edge:.3f} ≥ {MIN_EDGE}) — full-size trade")
             elif edge >= MIN_EDGE_CONVICTION and confidence == "HIGH":
                 conviction_trade = True
-                print(f"CONVICTION TRADE: edge={edge:.3f} confidence=HIGH. Half-size trade.")
+                print(f"  → CONVICTION ({edge:.3f} ≥ {MIN_EDGE_CONVICTION}, HIGH confidence) — half-size trade")
             else:
                 reason = (f"edge {edge:.3f} < {MIN_EDGE_CONVICTION}" if edge < MIN_EDGE_CONVICTION
-                          else f"edge {edge:.3f} < {MIN_EDGE} and confidence={confidence} (need HIGH)")
-                print(f"NO TRADE: {reason}. Skipping.")
+                          else f"edge {edge:.3f} < {MIN_EDGE} and confidence {confidence} ≠ HIGH")
+                print(f"  ✗ No trade: {reason}. Skipping.")
                 return
 
             amount = self.agent.format_trade_prompt_for_execution(best_trade)
@@ -357,12 +358,12 @@ class Trader:
             if trade_amount < ABSOLUTE_MIN_TRADE:
                 # Bump conviction trades up to minimum if the full cap allows it
                 if remaining_daily >= ABSOLUTE_MIN_TRADE and full_max >= ABSOLUTE_MIN_TRADE:
-                    print(f"  Conviction trade bumped ${trade_amount:.2f} → ${ABSOLUTE_MIN_TRADE:.2f} (minimum order size).")
+                    print(f"  Size bumped ${trade_amount:.2f} → ${ABSOLUTE_MIN_TRADE:.2f} (minimum order)")
                     trade_amount = ABSOLUTE_MIN_TRADE
                 else:
-                    print(f"Trade size ${trade_amount:.2f} below minimum ${ABSOLUTE_MIN_TRADE} and full cap too small. Skipping.")
+                    print(f"  ✗ Trade size ${trade_amount:.2f} below ${ABSOLUTE_MIN_TRADE} minimum — cap too small. Skipping.")
                     return
-            print(f"Trade amount: ${trade_amount:.2f} (cap ${size_cap:.2f}, daily room ${remaining_daily:.2f})")
+            print(f"  Size: ${trade_amount:.2f}  (cap ${size_cap:.2f}, daily room ${remaining_daily:.2f})")
 
             token_id, trade_side = self._resolve_trade(market, prob, price)
 
@@ -370,19 +371,19 @@ class Trader:
             try:
                 held = self.polymarket.get_held_token_ids()
                 if token_id and token_id in held:
-                    print(f"DEDUP: already holding token {token_id[:20]}... Skipping.")
+                    print(f"  ✗ Dedup: already holding token {token_id[:20]}... Skipping.")
                     return
             except Exception as e:
-                print(f"Position dedup check failed: {e}")
+                print(f"  Dedup check failed: {e}")
             traded_tokens = state.get("traded_tokens", [])
             if token_id and token_id in traded_tokens:
-                print(f"DEDUP: token {token_id[:20]}... already traded today (state file). Skipping.")
+                print(f"  ✗ Dedup: token {token_id[:20]}... already traded today. Skipping.")
                 return
 
             resp = None
             order_filled = False
             if token_id:
-                print(f"Placing BUY {trade_side} order, token: {token_id[:20]}...")
+                print(f"  Placing BUY {trade_side} — ${trade_amount:.2f}  token: {token_id[:20]}...")
                 from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
                 order_args = MarketOrderArgs(
                     token_id=token_id,
@@ -396,23 +397,24 @@ class Trader:
                         options=PartialCreateOrderOptions(tick_size="0.01"),
                         order_type=OrderType.FOK,
                     )
-                    print(f"7. TRADED: {resp}")
+                    order_id = resp.get("orderID", resp.get("id", "")) if isinstance(resp, dict) else ""
+                    print(f"  ✓ FILLED  order {str(order_id)[:16] or '(no id)'}")
                     order_filled = True
                     log_trade(question, token_id, trade_side, prob, price, edge,
                               trade_amount, "filled")
                 except Exception as e:
                     err = str(e)
                     if "fully filled" in err or "FOK" in err.upper() or "killed" in err.lower():
-                        print(f"FOK order not filled (insufficient liquidity at this price). Will retry next cycle.")
+                        print(f"  ✗ FOK killed — insufficient liquidity. Will retry next cycle.")
                         log_trade(question, token_id, trade_side, prob, price, edge,
                                   trade_amount, "fok_killed")
                     else:
-                        print(f"Order placement error: {e}")
+                        print(f"  ✗ Order error: {e}")
                         import traceback; traceback.print_exc()
                         log_trade(question, token_id, trade_side, prob, price, edge,
                                   trade_amount, "error")
             else:
-                print("Could not resolve token ID for selected market — skipping trade for safety.")
+                print("  ✗ Could not resolve token ID for market — skipping.")
 
             success = order_filled
             if order_filled and isinstance(resp, dict):
@@ -425,7 +427,7 @@ class Trader:
                     traded_tokens.append(token_id)
                 state["traded_tokens"] = traded_tokens
                 self._save_state(state)
-                print(f"Daily spent now ${state['spent']:.2f} of ${spend_cap:.2f} cap.")
+                print(f"  Spent today: ${state['spent']:.2f} / ${spend_cap:.2f} cap")
 
         except Exception as e:
             print(f"Error: {e}")
