@@ -121,14 +121,14 @@ def resolve_completed(polymarket_client) -> int:
     return resolved_count
 
 
-def print_scoreboard() -> None:
-    """Print a one-line scoreboard to the logs."""
+def get_scoreboard_line() -> str:
+    """Return a one-line scoreboard string."""
     history = _load()
     filled = [t for t in history if t.get("status") == "filled"]
 
-    wins   = [t for t in filled if t.get("outcome") == "win"]
-    losses = [t for t in filled if t.get("outcome") == "loss"]
-    pushes = [t for t in filled if t.get("outcome") == "push"]
+    wins    = [t for t in filled if t.get("outcome") == "win"]
+    losses  = [t for t in filled if t.get("outcome") == "loss"]
+    pushes  = [t for t in filled if t.get("outcome") == "push"]
     pending = [t for t in filled if t.get("outcome", "pending") == "pending"]
 
     total_resolved = len(wins) + len(losses) + len(pushes)
@@ -139,10 +139,12 @@ def print_scoreboard() -> None:
 
     pnl_str = f"+${total_pnl:.2f}" if total_pnl >= 0 else f"-${abs(total_pnl):.2f}"
 
-    print(
-        f"SCOREBOARD | "
-        f"{len(wins)}W - {len(losses)}L - {len(pushes)}P  "
-        f"({win_pct:.0f}% win rate)  "
-        f"P&L: {pnl_str}  "
-        f"[{len(pending)} pending]"
+    return (
+        f"  │  Score   : {len(wins)}W - {len(losses)}L - {len(pushes)}P  "
+        f"({win_pct:.0f}% win rate)  P&L: {pnl_str}  [{len(pending)} pending]"
     )
+
+
+def print_scoreboard() -> None:
+    """Print a one-line scoreboard to the logs."""
+    print(get_scoreboard_line())
