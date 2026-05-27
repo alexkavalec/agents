@@ -243,7 +243,6 @@ class WhaleTracker:
             print("  [WhaleTracker] No traders found from either source.")
             return []
 
-        print(f"  [WhaleTracker] Scanning {len(traders)} traders [{source}] for open positions...")
 
         buckets: dict = defaultdict(lambda: {
             "title": "", "asset": "", "side": "",
@@ -306,7 +305,6 @@ class WhaleTracker:
             })
 
         signals.sort(key=lambda s: (s["whale_count"], s["whale_volume_total"]), reverse=True)
-        print(f"  [WhaleTracker] {len(signals)} consensus signal(s) found.")
         return signals
 
     def get_market_holders(self, condition_id: str) -> str:
