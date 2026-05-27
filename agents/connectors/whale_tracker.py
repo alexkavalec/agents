@@ -82,85 +82,58 @@ def _categorise(holder: dict, yes_list: list, no_list: list) -> None:
 
 class WhaleTracker:
 
-    def _fetch_leaderboard_window(self, window: str, top_n: int = 10) -> list:
+    def get_top_traders_from_leaderboard(self, n: int = 50) -> list:
         """
-        Fetch top_n traders for a given time window from the leaderboard.
-        window: "today" | "weekly" | "monthly" | "all"
-        Returns list of raw entry dicts, empty on failure.
+        Fetch top n traders from the leaderboard (all-time PnL).
+        The API does not support time-window filtering — one call, deduplicated.
         """
+        entries = []
         for params in [
-            {"limit": top_n, "window": window, "sortBy": "pnl", "sortDir": "desc"},
-            {"limit": top_n, "window": window, "sortBy": "profitAndLoss", "sortDir": "desc"},
-            {"limit": top_n, "window": window},
+            {"limit": n, "sortBy": "pnl", "sortDir": "desc"},
+            {"limit": n, "sortBy": "profitAndLoss", "sortDir": "desc"},
+            {"limit": n},
         ]:
             data = _req(f"{DATA_API}/v1/leaderboard", params)
             if isinstance(data, list) and data:
-                return data
-        return []
+                entries = data
+                break
 
-    def get_top_traders_from_leaderboard(self, n: int = 50) -> list:
-        """
-        Fetch top 10 traders from each of the four leaderboard windows
-        (today / weekly / monthly / all-time), deduplicate by wallet address.
-        No profit floor — every slot from every window is included.
-        """
-        windows = ["today", "weekly", "monthly", "all"]
-        window_labels = {"today": "T", "weekly": "W", "monthly": "M", "all": "A"}
-        seen: dict = {}       # addr → trader dict
-        appearances: dict = {}  # addr → list of window labels
-
-        for window in windows:
-            entries = self._fetch_leaderboard_window(window, top_n=10)
-            tag = window_labels[window]
-            for entry in entries:
-                addr = (
-                    entry.get("proxyWallet")
-                    or entry.get("address")
-                    or entry.get("user")
+        seen: dict = {}
+        for entry in entries:
+            addr = (
+                entry.get("proxyWallet")
+                or entry.get("address")
+                or entry.get("user")
+                or ""
+            )
+            if not addr:
+                continue
+            try:
+                profit = float(
+                    entry.get("pnl")
+                    or entry.get("profit")
+                    or entry.get("profitAndLoss")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                profit = 0.0
+            if addr not in seen or profit > seen[addr]["volume"]:
+                name = (
+                    entry.get("userName")
+                    or entry.get("pseudonym")
+                    or entry.get("name")
+                    or entry.get("xUsername")
                     or ""
                 )
-                if not addr:
-                    continue
-                try:
-                    profit = float(
-                        entry.get("pnl")
-                        or entry.get("profit")
-                        or entry.get("profitAndLoss")
-                        or 0
-                    )
-                except (TypeError, ValueError):
-                    profit = 0.0
-
-                appearances.setdefault(addr, [])
-                appearances[addr].append(tag)
-
-                if addr not in seen or profit > seen[addr]["volume"]:
-                    name = (
-                        entry.get("userName")
-                        or entry.get("pseudonym")
-                        or entry.get("name")
-                        or entry.get("xUsername")
-                        or ""
-                    )
-                    seen[addr] = {"address": addr, "volume": profit, "name": name, "source": "leaderboard"}
+                seen[addr] = {"address": addr, "volume": profit, "name": name, "source": "leaderboard"}
 
         traders = list(seen.values())
         traders.sort(key=lambda t: t["volume"], reverse=True)
 
-        total_slots = sum(len(v) for v in appearances.values())
-        duplicates  = sum(len(v) - 1 for v in appearances.values() if len(v) > 1)
-        unique      = len(traders)
-        # Batch into one print so Railway's log collector keeps the box intact
-        lines = [
-            f"  ┌─ WHALE LEADERBOARD ── {unique} unique traders ({total_slots} slots across 4 windows, {duplicates} cross-window dupes)",
-            f"  │  T=Today  W=Weekly  M=Monthly  A=All-time",
-            f"  │",
-        ]
-        for t in traders:
-            tags = "+".join(appearances.get(t["address"], []))
+        lines = [f"  ┌─ WHALE LEADERBOARD ── top {len(traders)} traders by all-time PnL"]
+        for i, t in enumerate(traders, 1):
             label = t["name"] or t["address"][:14] + "..."
-            multi = " ◆" if len(appearances.get(t["address"], [])) > 1 else ""
-            lines.append(f"  │  [{tags:7s}]  ${t['volume']:>12,.0f}  {label}{multi}")
+            lines.append(f"  │  {i:2d}.  ${t['volume']:>12,.0f}  {label}")
         lines.append(f"  └─────────────────────────────────────────────────")
         print("\n".join(lines))
         return traders
