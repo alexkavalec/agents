@@ -150,15 +150,19 @@ class WhaleTracker:
         total_slots = sum(len(v) for v in appearances.values())
         duplicates  = sum(len(v) - 1 for v in appearances.values() if len(v) > 1)
         unique      = len(traders)
-        print(f"  ┌─ WHALE LEADERBOARD ── {unique} unique traders ({total_slots} slots across 4 windows, {duplicates} cross-window dupes)")
-        print(f"  │  T=Today  W=Weekly  M=Monthly  A=All-time")
-        print(f"  │")
+        # Batch into one print so Railway's log collector keeps the box intact
+        lines = [
+            f"  ┌─ WHALE LEADERBOARD ── {unique} unique traders ({total_slots} slots across 4 windows, {duplicates} cross-window dupes)",
+            f"  │  T=Today  W=Weekly  M=Monthly  A=All-time",
+            f"  │",
+        ]
         for t in traders:
             tags = "+".join(appearances.get(t["address"], []))
             label = t["name"] or t["address"][:14] + "..."
             multi = " ◆" if len(appearances.get(t["address"], [])) > 1 else ""
-            print(f"  │  [{tags:7s}]  ${t['volume']:>12,.0f}  {label}{multi}")
-        print(f"  └─────────────────────────────────────────────────")
+            lines.append(f"  │  [{tags:7s}]  ${t['volume']:>12,.0f}  {label}{multi}")
+        lines.append(f"  └─────────────────────────────────────────────────")
+        print("\n".join(lines))
         return traders
 
     def get_top_traders_from_trades(self, n: int = 30) -> list:

@@ -85,16 +85,18 @@ def resolve_completed(polymarket_client) -> int:
         redeemable = pos.get("redeemable", False)
         cur_price  = float(pos.get("curPrice", pos.get("currentValue", -1)) or -1)
 
-        if not redeemable and cur_price < 0:
-            continue  # still open
+        # Only resolve when Polymarket has marked the position as redeemable (actual resolution).
+        # Price-only checks cause false wins/losses on volatile open markets.
+        if not redeemable:
+            continue
 
-        # Determine outcome from current price
+        # Determine outcome from current price at resolution
         if cur_price >= RESOLUTION_THRESHOLD:
             outcome = "win"
         elif cur_price <= (1 - RESOLUTION_THRESHOLD):
             outcome = "loss"
         else:
-            continue  # not yet resolved cleanly
+            continue  # redeemable but price ambiguous — skip
 
         entry  = float(trade.get("market_price", trade.get("bot_estimate", 0.5)))
         amount = float(trade.get("amount_usd", 0))
