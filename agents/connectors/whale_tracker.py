@@ -82,65 +82,67 @@ def _categorise(holder: dict, yes_list: list, no_list: list) -> None:
 
 class WhaleTracker:
 
+    def _fetch_leaderboard_window(self, window: str, top_n: int = 10) -> list:
+        """
+        Fetch top_n traders for a given time window from the leaderboard.
+        window: "today" | "weekly" | "monthly" | "all"
+        Returns list of raw entry dicts, empty on failure.
+        """
+        for params in [
+            {"limit": top_n, "window": window, "sortBy": "pnl", "sortDir": "desc"},
+            {"limit": top_n, "window": window, "sortBy": "profitAndLoss", "sortDir": "desc"},
+            {"limit": top_n, "window": window},
+        ]:
+            data = _req(f"{DATA_API}/v1/leaderboard", params)
+            if isinstance(data, list) and data:
+                return data
+        return []
+
     def get_top_traders_from_leaderboard(self, n: int = 50) -> list:
         """
-        Fetch the true Polymarket leaderboard (ranked by all-time profit) via
-        /v1/leaderboard. Returns top N traders with address, name, and profit.
-        Returns empty list if the endpoint is blocked or unavailable.
+        Fetch top 10 traders from each of the four leaderboard time windows
+        (today, weekly, monthly, all-time), deduplicate by wallet, and return
+        everyone with profit ≥ MIN_LEADERBOARD_PROFIT.
         """
-        # Try various sort params — API may use profitAndLoss or profit
-        for sort_key in ("profitAndLoss", "profit", "pnl"):
-            data = _req(
-                f"{DATA_API}/v1/leaderboard",
-                {"limit": n, "sortBy": sort_key, "sortDir": "desc"},
-            )
-            if isinstance(data, list) and data:
-                break
-            # Also try without /v1 prefix
-            data = _req(
-                f"{DATA_API}/rankings",
-                {"limit": n, "sortBy": sort_key, "sortDir": "desc"},
-            )
-            if isinstance(data, list) and data:
-                break
-        else:
-            data = None
+        windows = ["today", "weekly", "monthly", "all"]
+        seen: dict = {}  # proxyWallet → best entry
 
-        if not isinstance(data, list) or not data:
-            return []
-
-        traders = []
-        for entry in data:
-            addr = (
-                entry.get("proxyWallet")
-                or entry.get("address")
-                or entry.get("user")
-                or ""
-            )
-            if not addr:
-                continue
-            try:
-                profit = float(
-                    entry.get("profit")
-                    or entry.get("profitAndLoss")
-                    or entry.get("pnl")
-                    or 0
+        for window in windows:
+            entries = self._fetch_leaderboard_window(window, top_n=10)
+            for entry in entries:
+                addr = (
+                    entry.get("proxyWallet")
+                    or entry.get("address")
+                    or entry.get("user")
+                    or ""
                 )
-            except (TypeError, ValueError):
-                profit = 0.0
-            if profit < MIN_LEADERBOARD_PROFIT:
-                continue
-            name = (
-                entry.get("userName")
-                or entry.get("pseudonym")
-                or entry.get("name")
-                or entry.get("xUsername")
-                or ""
-            )
-            traders.append({"address": addr, "volume": profit, "name": name, "source": "leaderboard"})
+                if not addr:
+                    continue
+                try:
+                    profit = float(
+                        entry.get("pnl")
+                        or entry.get("profit")
+                        or entry.get("profitAndLoss")
+                        or 0
+                    )
+                except (TypeError, ValueError):
+                    profit = 0.0
+                # Keep the entry with the highest profit figure seen across windows
+                if addr not in seen or profit > seen[addr]["volume"]:
+                    name = (
+                        entry.get("userName")
+                        or entry.get("pseudonym")
+                        or entry.get("name")
+                        or entry.get("xUsername")
+                        or ""
+                    )
+                    seen[addr] = {"address": addr, "volume": profit, "name": name, "source": "leaderboard"}
+
+        traders = [t for t in seen.values() if t["volume"] >= MIN_LEADERBOARD_PROFIT]
+        traders.sort(key=lambda t: t["volume"], reverse=True)
 
         if traders:
-            print(f"  [WhaleTracker] Leaderboard: {len(traders)} top traders (≥${MIN_LEADERBOARD_PROFIT:,.0f} profit):")
+            print(f"  [WhaleTracker] Leaderboard: {len(traders)} top traders across 4 windows (≥${MIN_LEADERBOARD_PROFIT:,.0f} profit):")
             for t in traders[:10]:
                 label = t["name"] or t["address"][:12] + "..."
                 print(f"    ${t['volume']:>12,.0f} profit — {label}")
