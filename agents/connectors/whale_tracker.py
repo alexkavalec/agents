@@ -109,9 +109,6 @@ class WhaleTracker:
         if not isinstance(data, list) or not data:
             return []
 
-        # Log raw keys from first entry once so we can verify the field names
-        print(f"  [WhaleTracker] Leaderboard raw fields: {list(data[0].keys())}")
-
         traders = []
         for entry in data:
             addr = (
@@ -134,9 +131,10 @@ class WhaleTracker:
             if profit < MIN_LEADERBOARD_PROFIT:
                 continue
             name = (
-                entry.get("pseudonym")
+                entry.get("userName")
+                or entry.get("pseudonym")
                 or entry.get("name")
-                or entry.get("username")
+                or entry.get("xUsername")
                 or ""
             )
             traders.append({"address": addr, "volume": profit, "name": name, "source": "leaderboard"})
