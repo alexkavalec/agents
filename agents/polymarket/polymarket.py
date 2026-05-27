@@ -151,7 +151,6 @@ class Polymarket:
             params={"active": "true", "closed": "false", "limit": 50, "order": "volume", "ascending": "false"}
         )
         if res.status_code == 200:
-            print(f"RAW API returned {len(res.json())} events")
             for event in res.json():
                 try:
                     event_data = self.map_api_to_event(event)
@@ -185,10 +184,7 @@ class Polymarket:
 
     def get_all_tradeable_events(self) -> "list[SimpleEvent]":
         all_events = self.get_all_events()
-        print(f"Total raw events fetched: {len(all_events)}")
-        tradeable = self.filter_events_for_trading(all_events)
-        print(f"Total tradeable events after filter: {len(tradeable)}")
-        return tradeable
+        return self.filter_events_for_trading(all_events)
 
     def get_sampling_simplified_markets(self) -> list:
         try:
