@@ -23,7 +23,7 @@ from collections import defaultdict
 DATA_API = "https://data-api.polymarket.com"
 
 # Minimum all-time profit to qualify as a true whale from the leaderboard ($50k+)
-MIN_LEADERBOARD_PROFIT = 50_000.0
+MIN_LEADERBOARD_PROFIT = 200_000.0
 
 # Minimum dollar volume in recent trades to qualify as a whale (fallback path)
 MIN_WHALE_VOLUME = 1_000.0
