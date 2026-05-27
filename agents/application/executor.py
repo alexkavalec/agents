@@ -416,7 +416,7 @@ class Executor:
         result = self.llm.invoke(prompt)
         trade_content = result.content
 
-        print(f"  Trade signal:    {trade_content[:120]}")
+        print(f"  Trade signal:    {trade_content[:200].replace(chr(10), ' ').replace(chr(13), ' ')}")
 
         # If the LLM omitted price:, inject it from the superforecaster estimate so
         # the edge check in trade.py always has a probability to compare against.

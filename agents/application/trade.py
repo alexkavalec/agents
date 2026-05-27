@@ -32,6 +32,8 @@ _CORR_STOP = {
     # generic time/event words that span unrelated markets
     "meeting", "june", "july", "august", "september", "october", "november",
     "december", "january", "february", "march", "april",
+    # generic political/outcome words that appear across unrelated elections
+    "presidential", "candidate", "winner",
 }
 
 # Position management — thresholds before ANY action is even considered.
@@ -233,15 +235,18 @@ class Trader:
                 from agents.connectors.whale_tracker import WhaleTracker
                 whale_signals = WhaleTracker().get_whale_signals()
                 if whale_signals:
-                    print(f"  ┌─ WHALE SIGNALS ── {len(whale_signals)} consensus position(s)")
+                    sig_lines = [f"  ┌─ WHALE SIGNALS ── {len(whale_signals)} consensus position(s)"]
                     for s in whale_signals[:5]:
-                        print(f"  │  {s['whale_count']}x  {s['side'].upper():<20s}  "
-                              f"entry {s['avg_entry']:.3f} → now {s['cur_price']:.3f}  "
-                              f"({s['price_drift']:.0%} drift)  \"{s['title'][:40]}\"")
+                        sig_lines.append(
+                            f"  │  {s['whale_count']}x  {s['side'].upper():<20s}  "
+                            f"entry {s['avg_entry']:.3f} → now {s['cur_price']:.3f}  "
+                            f"({s['price_drift']:.0%} drift)  \"{s['title'][:40]}\""
+                        )
                     if len(whale_signals) > 5:
-                        print(f"  │  … +{len(whale_signals)-5} more")
-                    print(f"  └───────────────────────────────────────────────────────")
-                    print(f"")
+                        sig_lines.append(f"  │  … +{len(whale_signals)-5} more")
+                    sig_lines.append(f"  └───────────────────────────────────────────────────────")
+                    print("\n".join(sig_lines))
+                    print("")
             except Exception as e:
                 print(f"  WhaleTracker error (non-fatal): {e}")
 
