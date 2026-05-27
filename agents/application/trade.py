@@ -355,8 +355,13 @@ class Trader:
             trade_amount = min(float(amount) if amount else size_cap, size_cap, remaining_daily)
 
             if trade_amount < ABSOLUTE_MIN_TRADE:
-                print(f"Trade size ${trade_amount:.2f} below minimum ${ABSOLUTE_MIN_TRADE}. Skipping.")
-                return
+                # Bump conviction trades up to minimum if the full cap allows it
+                if remaining_daily >= ABSOLUTE_MIN_TRADE and full_max >= ABSOLUTE_MIN_TRADE:
+                    print(f"  Conviction trade bumped ${trade_amount:.2f} → ${ABSOLUTE_MIN_TRADE:.2f} (minimum order size).")
+                    trade_amount = ABSOLUTE_MIN_TRADE
+                else:
+                    print(f"Trade size ${trade_amount:.2f} below minimum ${ABSOLUTE_MIN_TRADE} and full cap too small. Skipping.")
+                    return
             print(f"Trade amount: ${trade_amount:.2f} (cap ${size_cap:.2f}, daily room ${remaining_daily:.2f})")
 
             token_id, trade_side = self._resolve_trade(market, prob, price)
