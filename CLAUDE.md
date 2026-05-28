@@ -118,7 +118,8 @@ The bottleneck right now is trade quality, not agent specialization.
 - [x] **Task #12** — Removed debug print from `whale_tracker.py` `get_top_traders_from_leaderboard()`
 - [x] **Task #13** — Updated display label from "all-time PnL" to "unrealized PnL"; updated docstring. Confirmed `pnl` = unrealized. All-time profit field still unknown — revisit if API changes.
 - [x] **Task #14** — Added "election", "elections", "elect", "elected", "vote", "votes", "voting" to `_CORR_STOP` to prevent cross-country election markets from triggering false correlation blocks
-- [x] **Task #5** — Discord webhook notifications added (`DISCORD_WEBHOOK_URL` env var on Railway); fires on: trade filled, FOK killed, daily loss limit, daily spend cap, max positions, stop loss, take profit
+- [x] **Task #5** — Discord webhook notifications added (`DISCORD_WEBHOOK_URL` env var on Railway); fires on: trade filled, FOK killed, daily loss limit, daily spend cap, max positions, stop loss, take profit, fresh whale signals
+- [x] **Task #15** — Whale position tracking: positions persisted to `whale_positions_state.json` between cycles; fresh entries (new this cycle) flagged with 🆕 in logs; fresh signals score 2 vs 1 in market boost; Discord alert when any whale opens a fresh position
 - [ ] **Task #6** — Multi-agent architecture (see above — do after ~2 weeks of stable trading)
 
 ---

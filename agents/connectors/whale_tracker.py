@@ -10,6 +10,9 @@ Two-stage approach:
   2. Post-selection: /holders?market=CONDITION_ID → direct top-holder snapshot for the
      specific market being analyzed, injected as a calibration block in the prompt.
 
+Position tracking: whale positions are persisted to WHALE_STATE_FILE between cycles
+so fresh entries (new this cycle) can be distinguished from ongoing holds.
+
 All endpoints are public — no API key required.
   data-api.polymarket.com/v1/leaderboard — ranked leaderboard (profit/volume)
   data-api.polymarket.com/trades         — recent global trade feed (fallback)
@@ -17,10 +20,13 @@ All endpoints are public — no API key required.
   data-api.polymarket.com/holders        — top holders for a given market (conditionId)
 """
 
+import json
 import requests
 from collections import defaultdict
+from datetime import datetime, timezone
 
 DATA_API = "https://data-api.polymarket.com"
+WHALE_STATE_FILE = "whale_positions_state.json"
 
 # Minimum all-time profit to qualify as a true whale from the leaderboard ($50k+)
 MIN_LEADERBOARD_PROFIT = 200_000.0
@@ -36,6 +42,26 @@ MAX_PRICE_DRIFT = 0.40
 
 # Consensus threshold — require this many independent whales on the same side
 MIN_WHALES_AGREE = 2
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _load_whale_state() -> dict:
+    try:
+        with open(WHALE_STATE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"last_updated": None, "whale_positions": {}}
+
+
+def _save_whale_state(state: dict) -> None:
+    try:
+        with open(WHALE_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception:
+        pass
 
 
 def _req(url: str, params: dict = None) -> object:
@@ -226,6 +252,7 @@ class WhaleTracker:
         buckets: dict = defaultdict(lambda: {
             "title": "", "asset": "", "side": "",
             "entries": [], "cur_prices": [], "whale_volumes": [],
+            "whale_addresses": [],  # track which whales are in each bucket
         })
 
         for trader in traders:
@@ -256,6 +283,13 @@ class WhaleTracker:
                 buckets[key]["entries"].append(avg_price)
                 buckets[key]["cur_prices"].append(cur_price)
                 buckets[key]["whale_volumes"].append(trader["volume"])
+                buckets[key]["whale_addresses"].append(trader["address"])
+
+        # Load previous state to detect new entries this cycle
+        now = _now_iso()
+        prev_state    = _load_whale_state()
+        prev_pos      = prev_state.get("whale_positions", {})
+        new_state_pos: dict = {}  # will replace prev_pos in the saved file
 
         signals = []
         for (asset, side), d in buckets.items():
@@ -271,6 +305,27 @@ class WhaleTracker:
                 continue
 
             total_vol = int(sum(d["whale_volumes"]))
+            pos_key   = f"{asset}_{side}"
+
+            # Freshness: count which whales are new to this position this cycle
+            new_whale_count = 0
+            earliest_seen   = now
+            for addr in d["whale_addresses"]:
+                prev_first = prev_pos.get(addr, {}).get(pos_key, {}).get("first_seen")
+                if prev_first is None:
+                    new_whale_count += 1
+                else:
+                    if prev_first < earliest_seen:
+                        earliest_seen = prev_first
+                # Persist this whale's position with its original first_seen time
+                if addr not in new_state_pos:
+                    new_state_pos[addr] = {}
+                new_state_pos[addr][pos_key] = {
+                    "title":      d["title"],
+                    "side":       side,
+                    "first_seen": prev_first or now,
+                }
+
             signals.append({
                 "title":               d["title"],
                 "asset":               asset,
@@ -281,9 +336,18 @@ class WhaleTracker:
                 "whale_count":         count,
                 "whale_volume_total":  total_vol,
                 "whale_profit_total":  total_vol,  # backward compat alias
+                "new_whale_count":     new_whale_count,
+                "is_fresh":            new_whale_count > 0,
+                "first_seen":          earliest_seen,
             })
 
-        signals.sort(key=lambda s: (s["whale_count"], s["whale_volume_total"]), reverse=True)
+        _save_whale_state({"last_updated": now, "whale_positions": new_state_pos})
+
+        # Sort: fresh first (any new whale entry), then by whale count and volume
+        signals.sort(
+            key=lambda s: (s["is_fresh"], s["whale_count"], s["whale_volume_total"]),
+            reverse=True,
+        )
         return signals
 
     def get_market_holders(self, condition_id: str) -> str:
