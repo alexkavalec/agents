@@ -174,17 +174,18 @@ class WhaleTracker:
 
     def get_top_traders_all_windows(self, n: int = 10) -> tuple:
         """
-        Fetch top n traders from the daily, weekly, and all-time leaderboard windows
+        Fetch top n traders from the daily, weekly, monthly, and all-time windows
         by scraping polymarket.com/leaderboard/overall/{window}/profit (SSR page data).
 
-        Returns (today_list, weekly_list, alltime_list) each with up to n entries.
+        Returns (today_list, weekly_list, monthly_list, alltime_list) each up to n entries.
         """
-        today   = self._scrape_leaderboard_page("daily",  n)
-        weekly  = self._scrape_leaderboard_page("weekly", n)
-        alltime = self._scrape_leaderboard_page("all",    n)
-        return today, weekly, alltime
+        today   = self._scrape_leaderboard_page("daily",   n)
+        weekly  = self._scrape_leaderboard_page("weekly",  n)
+        monthly = self._scrape_leaderboard_page("monthly", n)
+        alltime = self._scrape_leaderboard_page("all",     n)
+        return today, weekly, monthly, alltime
 
-    def _format_leaderboard(self, today: list, weekly: list, alltime: list) -> list:
+    def _format_leaderboard(self, today: list, weekly: list, monthly: list, alltime: list) -> list:
         """Return formatted leaderboard box as a list of lines (no print)."""
         def _rows(lst, n=10):
             rows = []
@@ -193,13 +194,16 @@ class WhaleTracker:
                 rows.append(f"  │  {i:2d}.  ${t['volume']:>12,.0f}  {label}")
             return rows
 
-        lines = ["  ┌─ WHALE LEADERBOARD ── today / weekly / all-time top 10 (by PnL)"]
+        lines = ["  ┌─ WHALE LEADERBOARD ── today / weekly / monthly / all-time top 10 (by PnL)"]
         lines.append("  │")
         lines.append("  │  TODAY (24h profit):")
         lines += _rows(today) or ["  │    (no data)"]
         lines.append("  │")
         lines.append("  │  WEEKLY (7d profit):")
         lines += _rows(weekly) or ["  │    (no data)"]
+        lines.append("  │")
+        lines.append("  │  MONTHLY (30d profit):")
+        lines += _rows(monthly) or ["  │    (no data)"]
         lines.append("  │")
         lines.append("  │  ALL-TIME (total profit):")
         lines += _rows(alltime) or ["  │    (no data)"]
@@ -233,13 +237,13 @@ class WhaleTracker:
         """
         log: list = []  # accumulate all lines; caller prints at once
 
-        today, weekly, alltime = self.get_top_traders_all_windows(top_n)
-        log.extend(self._format_leaderboard(today, weekly, alltime))
+        today, weekly, monthly, alltime = self.get_top_traders_all_windows(top_n)
+        log.extend(self._format_leaderboard(today, weekly, monthly, alltime))
 
-        # Combine all three windows, deduplicate by address
+        # Combine all four windows, deduplicate by address
         seen_addrs: set = set()
         traders: list = []
-        for lst in (alltime, weekly, today):  # alltime first so rank ordering is preserved
+        for lst in (alltime, monthly, weekly, today):  # alltime first so rank ordering is preserved
             for t in lst:
                 if t["address"] not in seen_addrs:
                     seen_addrs.add(t["address"])
@@ -251,7 +255,7 @@ class WhaleTracker:
 
         log.append(
             f"  [WhaleTracker] Scanning {len(traders)} unique wallets "
-            f"({len(alltime)} all-time + {len(weekly)} weekly + {len(today)} today)"
+            f"({len(alltime)} all-time + {len(monthly)} monthly + {len(weekly)} weekly + {len(today)} today)"
         )
 
 

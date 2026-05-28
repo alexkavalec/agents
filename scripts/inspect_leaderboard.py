@@ -59,18 +59,20 @@ print("\n" + "=" * 70)
 print("  LEADERBOARD — polymarket.com page scrape (real windowed PnL)")
 print("=" * 70)
 
-daily_profit,  daily_vol  = scrape_window("daily",  20)
-weekly_profit, weekly_vol = scrape_window("weekly", 20)
-alltime_profit, alltime_vol = scrape_window("all",  20)
+daily_profit,   daily_vol   = scrape_window("daily",   20)
+weekly_profit,  weekly_vol  = scrape_window("weekly",  20)
+monthly_profit, monthly_vol = scrape_window("monthly", 20)
+alltime_profit, alltime_vol = scrape_window("all",     20)
 
-print_table("TODAY — top 20 by 24h profit:", daily_profit)
-print_table("WEEKLY — top 20 by 7d profit:", weekly_profit)
+print_table("TODAY — top 20 by 24h profit:",    daily_profit)
+print_table("WEEKLY — top 20 by 7d profit:",    weekly_profit)
+print_table("MONTHLY — top 20 by 30d profit:",  monthly_profit)
 print_table("ALL-TIME — top 20 by total profit:", alltime_profit)
 
 # ─── Combined unique wallet set ───────────────────────────────────────────────
 seen  = set()
 combined = []
-for lst in (alltime_profit, weekly_profit, daily_profit):
+for lst in (alltime_profit, monthly_profit, weekly_profit, daily_profit):
     for e in lst:
         addr = e.get("proxyWallet", "")
         if addr and addr not in seen:
