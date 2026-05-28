@@ -171,8 +171,8 @@ class WhaleTracker:
         Derive top n traders by USD volume from the global trade feed since `since_ts`.
         Used when the leaderboard window param is ignored.
         """
-        import time
-        data = _req(f"{DATA_API}/trades", {"limit": 5000, "takerOnly": "false"})
+        # Fetch a large batch — platform busy, 5000 trades may cover only a few hours
+        data = _req(f"{DATA_API}/trades", {"limit": 10000, "takerOnly": "false"})
         if not isinstance(data, list) or not data:
             return []
 
@@ -193,11 +193,12 @@ class WhaleTracker:
             if wallet not in name_by_wallet:
                 name_by_wallet[wallet] = trade.get("pseudonym") or trade.get("name") or ""
 
+        MIN_VOL = 500.0  # lower threshold for time-window feeds
         traders = [
             {"address": addr, "volume": vol, "name": name_by_wallet.get(addr, ""),
              "rank": 0, "source": label}
             for addr, vol in vol_by_wallet.items()
-            if vol >= MIN_WHALE_VOLUME
+            if vol >= MIN_VOL
         ]
         traders.sort(key=lambda t: t["volume"], reverse=True)
         return traders[:n]
@@ -242,8 +243,8 @@ class WhaleTracker:
 
         return today, weekly, alltime
 
-    def _print_leaderboard(self, today: list, weekly: list, alltime: list) -> None:
-        """Print the three-window leaderboard box as a single batched print."""
+    def _format_leaderboard(self, today: list, weekly: list, alltime: list) -> list:
+        """Return formatted leaderboard box as a list of lines (no print)."""
         def _rows(lst, n=10):
             rows = []
             for i, t in enumerate(lst[:n], 1):
@@ -262,7 +263,7 @@ class WhaleTracker:
         lines.append("  │  ALL-TIME (by unrealized PnL):")
         lines += _rows(alltime) or ["  │    (no data)"]
         lines.append("  └─────────────────────────────────────────────────")
-        print("\n".join(lines))
+        return lines
 
     def get_positions(self, address: str) -> list:
         """Open positions for one trader — skip resolved markets."""
@@ -278,23 +279,21 @@ class WhaleTracker:
             and not p.get("redeemable", False)
         ]
 
-    def get_whale_signals(self, top_n: int = 10) -> list:
+    def get_whale_signals(self, top_n: int = 10) -> tuple:
         """
         Fetch top 10 traders from today, weekly, and all-time leaderboard windows,
-        combine into a unique set, then scan their open positions for consensus signals:
-        markets where >= MIN_WHALES_AGREE independent whales hold the same side
-        AND the price hasn't drifted more than MAX_PRICE_DRIFT from their avg entry.
+        combine into a unique set, then scan their open positions for consensus signals.
 
-        Returns list of dicts sorted by freshness, whale_count, volume:
-        {
-          title, asset, side,
-          avg_entry, cur_price, price_drift,
-          whale_count, whale_volume_total, whale_profit_total,
-          new_whale_count, is_fresh, first_seen
-        }
+        Returns (signals, log_text) so the caller can print everything as one batched
+        call and avoid Railway log reordering.
+
+        signals: list of dicts sorted by freshness, whale_count, volume
+        log_text: pre-formatted string covering leaderboard + scan summary + signals box
         """
+        log: list = []  # accumulate all lines; caller prints at once
+
         today, weekly, alltime = self.get_top_traders_all_windows(top_n)
-        self._print_leaderboard(today, weekly, alltime)
+        log.extend(self._format_leaderboard(today, weekly, alltime))
 
         # Combine all three windows, deduplicate by address
         seen_addrs: set = set()
@@ -306,11 +305,13 @@ class WhaleTracker:
                     traders.append(t)
 
         if not traders:
-            print("  [WhaleTracker] No traders found from any window.")
-            return []
+            log.append("  [WhaleTracker] No traders found from any window.")
+            return [], "\n".join(log)
 
-        print(f"  [WhaleTracker] Scanning {len(traders)} unique wallets "
-              f"({len(alltime)} all-time + {len(weekly)} weekly + {len(today)} today)")
+        log.append(
+            f"  [WhaleTracker] Scanning {len(traders)} unique wallets "
+            f"({len(alltime)} all-time + {len(weekly)} weekly + {len(today)} today)"
+        )
 
 
         buckets: dict = defaultdict(lambda: {
@@ -412,7 +413,28 @@ class WhaleTracker:
             key=lambda s: (s["is_fresh"], s["whale_count"], s["whale_volume_total"]),
             reverse=True,
         )
-        return signals
+
+        # Build signals box into log lines
+        if signals:
+            fresh_n   = sum(1 for s in signals if s.get("is_fresh"))
+            ongoing_n = len(signals) - fresh_n
+            log.append(
+                f"  ┌─ WHALE SIGNALS ── {len(signals)} consensus  "
+                f"({fresh_n} new  /  {ongoing_n} ongoing)"
+            )
+            for s in signals[:5]:
+                tag       = "[NEW]" if s.get("is_fresh") else "     "
+                new_label = (f"  +{s['new_whale_count']} new" if s.get("new_whale_count") else "")
+                log.append(
+                    f"  │ {tag} {s['whale_count']}x  {s['side'].upper():<20s}  "
+                    f"entry {s['avg_entry']:.3f} -> now {s['cur_price']:.3f}  "
+                    f"({s['price_drift']:.0%} drift){new_label}  \"{s['title'][:35]}\""
+                )
+            if len(signals) > 5:
+                log.append(f"  │  ... +{len(signals)-5} more")
+            log.append(f"  └───────────────────────────────────────────────────────")
+
+        return signals, "\n".join(log)
 
     def get_market_holders(self, condition_id: str) -> str:
         """
