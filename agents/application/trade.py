@@ -250,37 +250,21 @@ class Trader:
             whale_signals = []
             try:
                 from agents.connectors.whale_tracker import WhaleTracker
-                whale_signals = WhaleTracker().get_whale_signals()
-                if whale_signals:
-                    fresh   = [s for s in whale_signals if s.get("is_fresh")]
-                    ongoing = [s for s in whale_signals if not s.get("is_fresh")]
-                    sig_lines = [
-                        f"  ┌─ WHALE SIGNALS ── {len(whale_signals)} consensus"
-                        f"  ({len(fresh)} 🆕 new  /  {len(ongoing)} ongoing)"
-                    ]
-                    for s in whale_signals[:5]:
-                        badge     = "🆕" if s.get("is_fresh") else "  "
-                        new_label = (f"  +{s['new_whale_count']} new" if s.get("new_whale_count") else "")
-                        sig_lines.append(
-                            f"  │ {badge} {s['whale_count']}x  {s['side'].upper():<20s}  "
-                            f"entry {s['avg_entry']:.3f} → now {s['cur_price']:.3f}  "
-                            f"({s['price_drift']:.0%} drift){new_label}  \"{s['title'][:35]}\""
+                whale_signals, whale_log = WhaleTracker().get_whale_signals()
+                # Print leaderboard + signals as one batched call to avoid Railway log reordering
+                print(whale_log)
+                print("")
+                # Discord alert for fresh signals
+                fresh = [s for s in whale_signals if s.get("is_fresh")]
+                if fresh:
+                    alert_lines = ["**FRESH WHALE SIGNALS** — new positions opened this cycle:"]
+                    for s in fresh[:3]:
+                        alert_lines.append(
+                            f"> [NEW] {s['new_whale_count']} whale(s) — {s['side'].upper()} | "
+                            f"entry {s['avg_entry']:.3f}  now {s['cur_price']:.3f}\n"
+                            f">    \"{s['title'][:100]}\""
                         )
-                    if len(whale_signals) > 5:
-                        sig_lines.append(f"  │  … +{len(whale_signals)-5} more")
-                    sig_lines.append(f"  └───────────────────────────────────────────────────────")
-                    print("\n".join(sig_lines))
-                    print("")
-                    # Discord alert for fresh signals from top-10 whales
-                    if fresh:
-                        alert_lines = [f"🐋 **FRESH WHALE SIGNAL(S)** — {len(fresh)} new position(s) opened this cycle:"]
-                        for s in fresh[:3]:
-                            alert_lines.append(
-                                f"> 🆕 {s['new_whale_count']} new whale(s) — {s['side'].upper()} | "
-                                f"entry {s['avg_entry']:.3f}  now {s['cur_price']:.3f}\n"
-                                f">    \"{s['title'][:100]}\""
-                            )
-                        _discord("\n".join(alert_lines))
+                    _discord("\n".join(alert_lines))
             except Exception as e:
                 print(f"  WhaleTracker error (non-fatal): {e}")
 
@@ -321,7 +305,7 @@ class Trader:
                 fresh_b   = sum(1 for m in markets if _whale_score(m) == 2)
                 ongoing_b = sum(1 for m in markets if _whale_score(m) == 1)
                 if fresh_b or ongoing_b:
-                    print(f"  Whale boost: {fresh_b} 🆕 fresh  +  {ongoing_b} ongoing moved to top")
+                    print(f"  Whale boost: {fresh_b} fresh [NEW] + {ongoing_b} ongoing moved to top")
 
             # Collect open position titles for correlation filtering (soft + hard)
             open_pos_questions = []
