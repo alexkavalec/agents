@@ -314,6 +314,22 @@ class Trader:
             except Exception as e:
                 print(f"  Could not fetch open positions for correlation check: {e}")
 
+            # Pre-filter: remove correlated markets BEFORE the AI sees them.
+            # Without this, the AI tends to select markets it finds most interesting,
+            # which are often the same topics as existing positions → all blocked post-AI.
+            if open_pos_questions:
+                pre_n = len(markets)
+                markets = [
+                    m for m in markets
+                    if not self._is_correlated_with_open(m.get("question", ""), open_pos_questions)[0]
+                ]
+                removed = pre_n - len(markets)
+                if removed:
+                    print(f"  Pre-filter: {removed} correlated market(s) removed ({len(markets)} remain)")
+                if not markets:
+                    print("  ✗ All markets correlated with open positions. Skipping.")
+                    return
+
             filtered_markets = self.agent.filter_markets(markets, open_positions=open_pos_questions)
             print(f"  → {len(filtered_markets)} candidate(s) after AI market selection")
             if not filtered_markets:

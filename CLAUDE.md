@@ -129,12 +129,14 @@ The bottleneck right now is trade quality, not agent specialization.
 - `pnl` — **unrealized PnL on current open positions** (NOT all-time profit — fluctuates daily)
   - LaBradfordSmith22: $651k → $622k → $566k within same day → confirmed volatile
   - Real top traders (surfandturf ~$3M all-time, bossoskil1 ~$2.87M) show only $100k–$600k here
-- `vol` — likely total trading volume (possibly millions for top traders — verify from raw dump)
+- `vol` — **always 0** (confirmed from raw dump 2026-05-28). Field is present but unpopulated. Useless.
 - `profileImage` — excluded from display (too long)
+- Raw dump (2026-05-28 #1 entry): `{'rank': '1', 'proxyWallet': '0x4924...', 'vol': 0, 'pnl': 278004.60}`
+  - All-time profit field remains unidentified — `pnl` (unrealized) is the best available sort key.
 
 ### `/v1/leaderboard` API quirks
 - `window` param (all-time / 1m / 1w) is **silently ignored** — always returns same data
-- `sortBy` param: try `pnl` or `profitAndLoss` — one may work, check raw top entry order
+- `sortBy` param: `pnl` works; `profitAndLoss` also accepted but returns same unrealized field
 - No API key required; `User-Agent` header helps avoid 403s
 
 ### Inspect script
