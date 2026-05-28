@@ -174,12 +174,19 @@ class WhaleTracker:
 
     def get_top_traders_all_windows(self, n: int = 10) -> tuple:
         """
-        Fetch top n traders from the daily, weekly, monthly, and all-time windows
+        Fetch top n traders from the today, weekly, monthly, and all-time windows
         by scraping polymarket.com/leaderboard/overall/{window}/profit (SSR page data).
+
+        Polymarket exposes 3 windowed profit leaderboards:
+          weekly  → 7d realized profit   (/overall/weekly/profit)
+          monthly → 30d profit            (/overall/monthly/profit)
+          all     → all-time profit       (/overall/all/profit)
+        The 'today' slug is a separate snapshot of unrealized PnL (open positions),
+        ranked differently from the profit windows above.
 
         Returns (today_list, weekly_list, monthly_list, alltime_list) each up to n entries.
         """
-        today   = self._scrape_leaderboard_page("daily",   n)
+        today   = self._scrape_leaderboard_page("today",   n)
         weekly  = self._scrape_leaderboard_page("weekly",  n)
         monthly = self._scrape_leaderboard_page("monthly", n)
         alltime = self._scrape_leaderboard_page("all",     n)
@@ -196,7 +203,7 @@ class WhaleTracker:
 
         lines = ["  ┌─ WHALE LEADERBOARD ── today / weekly / monthly / all-time top 10 (by PnL)"]
         lines.append("  │")
-        lines.append("  │  TODAY (24h profit):")
+        lines.append("  │  TODAY (unrealized PnL on open positions):")
         lines += _rows(today) or ["  │    (no data)"]
         lines.append("  │")
         lines.append("  │  WEEKLY (7d profit):")
