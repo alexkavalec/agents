@@ -8,6 +8,7 @@ import json
 import re
 import datetime
 import time
+import requests as _requests
 
 # =========================================================================
 # GUARDRAILS CONFIG  -- tune these. All money limits are FRACTIONS of balance.
@@ -34,6 +35,8 @@ _CORR_STOP = {
     "december", "january", "february", "march", "april",
     # generic political/outcome words that appear across unrelated elections
     "presidential", "candidate", "winner",
+    # election/vote words appear in every election market across all countries
+    "election", "elections", "elect", "elected", "vote", "votes", "voting",
 }
 
 # Position management — thresholds before ANY action is even considered.
@@ -43,6 +46,17 @@ POSITION_TAKE_PROFIT_GAIN   = 0.60   # consider taking profit if up >= 60%
 POSITION_STOP_LOSS_LOSS     = -0.60  # consider cutting if down >= 60%
 POSITION_ACTION_EDGE_MAX    = 0.08   # only act if AI now shows edge < 8% (thesis gone)
 # =========================================================================
+
+
+def _discord(msg: str) -> None:
+    """Post a notification to Discord if DISCORD_WEBHOOK_URL is set."""
+    url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    if not url:
+        return
+    try:
+        _requests.post(url, json={"content": msg}, timeout=5)
+    except Exception:
+        pass
 
 
 class Trader:
@@ -204,12 +218,15 @@ class Trader:
 
             if balance <= loss_floor:
                 print(f"  ✗ DAILY LOSS LIMIT — balance ${balance:.2f} hit floor ${loss_floor:.2f}. Stopping.")
+                _discord(f"🛑 **DAILY LOSS LIMIT** — balance ${balance:.2f} hit floor ${loss_floor:.2f}. Bot halted for today.")
                 return
             if spent_today >= spend_cap:
                 print(f"  ✗ DAILY SPEND CAP — spent ${spent_today:.2f} of ${spend_cap:.2f}. Stopping.")
+                _discord(f"🛑 **DAILY SPEND CAP** — spent ${spent_today:.2f} of ${spend_cap:.2f} limit. Bot halted for today.")
                 return
             if open_count >= MAX_OPEN_POSITIONS:
                 print(f"  ✗ MAX POSITIONS — {open_count}/{MAX_OPEN_POSITIONS} open. Skipping.")
+                _discord(f"⚠️ **MAX POSITIONS** — {open_count}/{MAX_OPEN_POSITIONS} open. Skipping this cycle.")
                 return
 
             # Cooldown: API-first (survives redeploys), state file as fallback
@@ -296,6 +313,22 @@ class Trader:
                 ]
             except Exception as e:
                 print(f"  Could not fetch open positions for correlation check: {e}")
+
+            # Pre-filter: remove correlated markets BEFORE the AI sees them.
+            # Without this, the AI tends to select markets it finds most interesting,
+            # which are often the same topics as existing positions → all blocked post-AI.
+            if open_pos_questions:
+                pre_n = len(markets)
+                markets = [
+                    m for m in markets
+                    if not self._is_correlated_with_open(m.get("question", ""), open_pos_questions)[0]
+                ]
+                removed = pre_n - len(markets)
+                if removed:
+                    print(f"  Pre-filter: {removed} correlated market(s) removed ({len(markets)} remain)")
+                if not markets:
+                    print("  ✗ All markets correlated with open positions. Skipping.")
+                    return
 
             filtered_markets = self.agent.filter_markets(markets, open_positions=open_pos_questions)
             print(f"  → {len(filtered_markets)} candidate(s) after AI market selection")
@@ -412,12 +445,21 @@ class Trader:
                     order_filled = True
                     log_trade(question, token_id, trade_side, prob, price, edge,
                               trade_amount, "filled")
+                    _discord(
+                        f"✅ **TRADE FILLED** — {trade_side} ${trade_amount:.2f}\n"
+                        f"> {question[:120]}\n"
+                        f"> Forecast {prob:.3f} vs market {price:.3f}  edge {edge:+.3f}  [{confidence}]"
+                    )
                 except Exception as e:
                     err = str(e)
                     if "fully filled" in err or "FOK" in err.upper() or "killed" in err.lower():
                         print(f"  ✗ FOK killed — insufficient liquidity. Will retry next cycle.")
                         log_trade(question, token_id, trade_side, prob, price, edge,
                                   trade_amount, "fok_killed")
+                        _discord(
+                            f"⚡ **FOK KILLED** — no liquidity for {trade_side} ${trade_amount:.2f}\n"
+                            f"> {question[:120]}"
+                        )
                     else:
                         print(f"  ✗ Order error: {e}")
                         import traceback; traceback.print_exc()
@@ -559,6 +601,10 @@ class Trader:
                         "pnl_pct": pnl_pct,
                     }
                     print(f"  STOP LOSS (unconditional): down {pnl_pct:+.1%} — closing without AI re-eval.")
+                    _discord(
+                        f"🔴 **STOP LOSS** — {outcome} {pnl_pct:+.1%}\n"
+                        f"> {title[:120]}"
+                    )
                     self._close_position(asset, size, "STOP LOSS", lesson_ctx)
                     continue
 
@@ -601,6 +647,10 @@ class Trader:
                     "pnl_pct": pnl_pct,
                 }
                 print(f"  TAKE PROFIT: up {pnl_pct:+.1%}, AI edge = {current_edge:+.2f} (closed)")
+                _discord(
+                    f"🟢 **TAKE PROFIT** — {outcome} {pnl_pct:+.1%}, AI edge collapsed to {current_edge:+.2f}\n"
+                    f"> {question[:120]}"
+                )
                 self._close_position(asset, size, "TAKE PROFIT", lesson_ctx)
 
         except Exception as e:

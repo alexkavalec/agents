@@ -115,10 +115,10 @@ The bottleneck right now is trade quality, not agent specialization.
 - [x] **Task #9** — Scoreboard premature LOSS fix: only resolve win/loss when `redeemable=True` (not just low price on open market)
 - [x] **Task #10** — Correlation stop words expanded: added "meeting", month names, "presidential", "candidate", "winner" to `_CORR_STOP`
 - [x] **Task #11** — Whale leaderboard fixed: API ignores `window` param, removed multi-window fetching, now fetches once; numbered display with box formatting
-- [ ] **Task #12** — Remove debug print from `whale_tracker.py` `get_top_traders_from_leaderboard()` once correct all-time PnL field is identified (see Whale API Notes below)
-- [ ] **Task #13** — Fix whale sort field: `pnl` = unrealized PnL (fluctuates), not all-time profit. Need to identify correct field from raw dump and update display label
-- [ ] **Task #14** — Fix ongoing correlation over-blocking: bot holds Peruvian + Colombian election + Fed rates positions simultaneously → almost all candidates blocked each cycle
-- [ ] **Task #5** — Discord webhook notifications when bot trades or hits a guardrail
+- [x] **Task #12** — Removed debug print from `whale_tracker.py` `get_top_traders_from_leaderboard()`
+- [x] **Task #13** — Updated display label from "all-time PnL" to "unrealized PnL"; updated docstring. Confirmed `pnl` = unrealized. All-time profit field still unknown — revisit if API changes.
+- [x] **Task #14** — Added "election", "elections", "elect", "elected", "vote", "votes", "voting" to `_CORR_STOP` to prevent cross-country election markets from triggering false correlation blocks
+- [x] **Task #5** — Discord webhook notifications added (`DISCORD_WEBHOOK_URL` env var on Railway); fires on: trade filled, FOK killed, daily loss limit, daily spend cap, max positions, stop loss, take profit
 - [ ] **Task #6** — Multi-agent architecture (see above — do after ~2 weeks of stable trading)
 
 ---
@@ -129,22 +129,14 @@ The bottleneck right now is trade quality, not agent specialization.
 - `pnl` — **unrealized PnL on current open positions** (NOT all-time profit — fluctuates daily)
   - LaBradfordSmith22: $651k → $622k → $566k within same day → confirmed volatile
   - Real top traders (surfandturf ~$3M all-time, bossoskil1 ~$2.87M) show only $100k–$600k here
-- `vol` — likely total trading volume (possibly millions for top traders — verify from raw dump)
+- `vol` — **always 0** (confirmed from raw dump 2026-05-28). Field is present but unpopulated. Useless.
 - `profileImage` — excluded from display (too long)
-
-### Temporary debug print in `whale_tracker.py`
-`get_top_traders_from_leaderboard()` currently prints all raw fields for the #1 leaderboard entry:
-```python
-print(f"  [WhaleTracker] raw top entry: { {k: v for k, v in top.items() if k not in ('profileImage',)} }")
-```
-**Remove this once the correct all-time profit field is identified.** Then:
-1. Update `profit = float(entry.get("CORRECT_FIELD") or ...)` in the same function
-2. Update `MIN_LEADERBOARD_PROFIT = 200_000.0` if the field's units differ
-3. Update the display label in the leaderboard box from `$...` to match the field semantics
+- Raw dump (2026-05-28 #1 entry): `{'rank': '1', 'proxyWallet': '0x4924...', 'vol': 0, 'pnl': 278004.60}`
+  - All-time profit field remains unidentified — `pnl` (unrealized) is the best available sort key.
 
 ### `/v1/leaderboard` API quirks
 - `window` param (all-time / 1m / 1w) is **silently ignored** — always returns same data
-- `sortBy` param: try `pnl` or `profitAndLoss` — one may work, check raw top entry order
+- `sortBy` param: `pnl` works; `profitAndLoss` also accepted but returns same unrealized field
 - No API key required; `User-Agent` header helps avoid 403s
 
 ### Inspect script
