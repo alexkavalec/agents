@@ -84,7 +84,9 @@ class WhaleTracker:
 
     def get_top_traders_from_leaderboard(self, n: int = 50) -> list:
         """
-        Fetch top n traders from the leaderboard (all-time PnL).
+        Fetch top n traders from the leaderboard.
+        Note: the `pnl` field returned by this API is *unrealized* PnL on current open positions,
+        not all-time profit. It fluctuates daily. Use it as a ranking proxy, not an absolute measure.
         The API does not support time-window filtering — one call, deduplicated.
         """
         entries = []
@@ -99,10 +101,6 @@ class WhaleTracker:
                 break
 
         seen: dict = {}
-        if entries:
-            # Debug: show raw fields for top entry so we can verify the right PnL field
-            top = entries[0]
-            print(f"  [WhaleTracker] raw top entry: { {k: v for k, v in top.items() if k not in ('profileImage',)} }")
         for entry in entries:
             addr = (
                 entry.get("proxyWallet")
@@ -134,7 +132,7 @@ class WhaleTracker:
         traders = list(seen.values())
         traders.sort(key=lambda t: t["volume"], reverse=True)
 
-        lines = [f"  ┌─ WHALE LEADERBOARD ── top {len(traders)} traders by all-time PnL"]
+        lines = [f"  ┌─ WHALE LEADERBOARD ── top {len(traders)} traders by unrealized PnL"]
         for i, t in enumerate(traders, 1):
             label = t["name"] or t["address"][:14] + "..."
             lines.append(f"  │  {i:2d}.  ${t['volume']:>12,.0f}  {label}")
