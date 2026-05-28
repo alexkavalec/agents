@@ -110,5 +110,100 @@ The bottleneck right now is trade quality, not agent specialization.
 ## Known Issues / To-Do
 - [x] **Task #3** — Trade side logic fixed (`_resolve_trade` reads token IDs from selected market)
 - [x] **Task #4** — Auth errors silenced (`derive_api_key()` + optional `CLOB_API_*` env vars)
+- [x] **Task #7** — Log cleanup: batched prints, removed redundant lines, compact pipeline summary
+- [x] **Task #8** — Trade size fix: bot was blocked at $9.40 balance (10% = $0.94 < $1 min); now checks `balance >= ABSOLUTE_MIN_TRADE` instead of `full_max >= ABSOLUTE_MIN_TRADE`
+- [x] **Task #9** — Scoreboard premature LOSS fix: only resolve win/loss when `redeemable=True` (not just low price on open market)
+- [x] **Task #10** — Correlation stop words expanded: added "meeting", month names, "presidential", "candidate", "winner" to `_CORR_STOP`
+- [x] **Task #11** — Whale leaderboard fixed: API ignores `window` param, removed multi-window fetching, now fetches once; numbered display with box formatting
+- [ ] **Task #12** — Remove debug print from `whale_tracker.py` `get_top_traders_from_leaderboard()` once correct all-time PnL field is identified (see Whale API Notes below)
+- [ ] **Task #13** — Fix whale sort field: `pnl` = unrealized PnL (fluctuates), not all-time profit. Need to identify correct field from raw dump and update display label
+- [ ] **Task #14** — Fix ongoing correlation over-blocking: bot holds Peruvian + Colombian election + Fed rates positions simultaneously → almost all candidates blocked each cycle
 - [ ] **Task #5** — Discord webhook notifications when bot trades or hits a guardrail
 - [ ] **Task #6** — Multi-agent architecture (see above — do after ~2 weeks of stable trading)
+
+---
+
+## Whale API Notes (important for Task #12/#13)
+
+### `/v1/leaderboard` field meanings
+- `pnl` — **unrealized PnL on current open positions** (NOT all-time profit — fluctuates daily)
+  - LaBradfordSmith22: $651k → $622k → $566k within same day → confirmed volatile
+  - Real top traders (surfandturf ~$3M all-time, bossoskil1 ~$2.87M) show only $100k–$600k here
+- `vol` — likely total trading volume (possibly millions for top traders — verify from raw dump)
+- `profileImage` — excluded from display (too long)
+
+### Temporary debug print in `whale_tracker.py`
+`get_top_traders_from_leaderboard()` currently prints all raw fields for the #1 leaderboard entry:
+```python
+print(f"  [WhaleTracker] raw top entry: { {k: v for k, v in top.items() if k not in ('profileImage',)} }")
+```
+**Remove this once the correct all-time profit field is identified.** Then:
+1. Update `profit = float(entry.get("CORRECT_FIELD") or ...)` in the same function
+2. Update `MIN_LEADERBOARD_PROFIT = 200_000.0` if the field's units differ
+3. Update the display label in the leaderboard box from `$...` to match the field semantics
+
+### `/v1/leaderboard` API quirks
+- `window` param (all-time / 1m / 1w) is **silently ignored** — always returns same data
+- `sortBy` param: try `pnl` or `profitAndLoss` — one may work, check raw top entry order
+- No API key required; `User-Agent` header helps avoid 403s
+
+### Inspect script
+`scripts/inspect_whale.py` — one-shot profiler for any Polymarket address:
+```
+python scripts/inspect_whale.py 0xa5ea13a81d2b7e8e424b182bdc1db08e756bd96a
+```
+Shows: raw leaderboard entry (all fields), open positions sorted by value, recent trades.
+Default address: bossoskil1 (`0xa5ea13a81d2b7e8e424b182bdc1db08e756bd96a`).
+
+---
+
+## Environment / Railway Notes
+
+### Network policy (Cloud environment)
+Claude Code sessions on code.claude.com run in isolated containers. By default, outbound
+network is **None** (all blocked). To allow Polymarket API access:
+1. Go to code.claude.com → Environment settings → Network policy
+2. Set to **Custom** and add: `*.polymarket.com`, `data-api.polymarket.com`, `clob.polymarket.com`
+3. **Takes effect on next session start** — not current session
+4. Without this, all `requests.get(...)` to Polymarket return 403
+
+### Railway deployment
+- Container restarts don't lose state: `trader_daily_state.json` persists on Railway volume
+- Cooldown and dedup use live API calls so they survive restarts even without the file
+- Logs are collected by Railway's log aggregator — rapid-fire `print()` calls get reordered
+  - **Fix**: batch entire log sections into single `print("\n".join([...]))` call
+
+---
+
+## Log Format Reference (current)
+
+Pipeline flow line:
+```
+Scan: 50 events → 10 after RAG filter → 15 markets → 4 candidate(s) after AI market selection
+```
+
+Per-cycle summary box (single batched print):
+```
+  ┌─ CYCLE SUMMARY ───────────────────────────────────────
+  │  Balance : $9.40  (start $9.40)
+  │  Spent   : $0.00 / $2.82 daily cap
+  │  Positions: 3 / 5 max
+  │  Score   : 0W - 0L - 0P  (0% win rate)  P&L: +$0.00  [0 pending]
+  │  Trades  : 1 attempts | 0 filled | 1 FOK killed | 0W 0L
+  └───────────────────────────────────────────────────────
+```
+
+Whale signals box (single batched print):
+```
+  ┌─ WHALE SIGNALS ── N consensus signal(s) from leaderboard scan
+  │  ...
+  └─────────────────────────────────────────────────────
+```
+
+Whale leaderboard box (single batched print):
+```
+  ┌─ WHALE LEADERBOARD ── top N traders by all-time PnL
+  │   1.  $   566,239  LaBradfordSmith22
+  │   2.  $   ...
+  └─────────────────────────────────────────────────────
+```
