@@ -119,7 +119,8 @@ The bottleneck right now is trade quality, not agent specialization.
 - [x] **Task #13** — Updated display label from "all-time PnL" to "unrealized PnL"; updated docstring. Confirmed `pnl` = unrealized. All-time profit field still unknown — revisit if API changes.
 - [x] **Task #14** — Added "election", "elections", "elect", "elected", "vote", "votes", "voting" to `_CORR_STOP` to prevent cross-country election markets from triggering false correlation blocks
 - [x] **Task #5** — Discord webhook notifications added (`DISCORD_WEBHOOK_URL` env var on Railway); fires on: trade filled, FOK killed, daily loss limit, daily spend cap, max positions, stop loss, take profit, fresh whale signals
-- [x] **Task #15** — Whale position tracking: positions persisted to `whale_positions_state.json` between cycles; fresh entries (new this cycle) flagged with 🆕 in logs; fresh signals score 2 vs 1 in market boost; Discord alert when any whale opens a fresh position
+- [x] **Task #15** — Whale position tracking: positions persisted to `whale_positions_state.json` between cycles; fresh entries (new this cycle) flagged as NEW in logs; fresh signals score 2 vs 1 in market boost; Discord alert when any whale opens a fresh position
+- [x] **Task #16** — Three-window whale leaderboard: fetch top 10 from today, weekly, and all-time; auto-detect if `window` param works; fall back to trade-feed time filtering. Up to 30 unique wallets watched per cycle. Leaderboard box shows all three windows.
 - [ ] **Task #6** — Multi-agent architecture (see above — do after ~2 weeks of stable trading)
 
 ---
@@ -136,9 +137,10 @@ The bottleneck right now is trade quality, not agent specialization.
   - All-time profit field remains unidentified — `pnl` (unrealized) is the best available sort key.
 
 ### `/v1/leaderboard` API quirks
-- `window` param (all-time / 1m / 1w) is **silently ignored** — always returns same data
+- `window` param (`1d`, `1w`, etc.): may be silently ignored — code auto-detects by comparing top-1 address. If ignored, falls back to filtering `/trades` feed by timestamp for daily/weekly top traders.
 - `sortBy` param: `pnl` works; `profitAndLoss` also accepted but returns same unrealized field
 - No API key required; `User-Agent` header helps avoid 403s
+- `/trades?limit=5000` fetches global trade feed; filtered by timestamp for daily/weekly active traders when leaderboard window param is non-functional
 
 ### Inspect script
 `scripts/inspect_whale.py` — one-shot profiler for any Polymarket address:

@@ -106,105 +106,163 @@ def _categorise(holder: dict, yes_list: list, no_list: list) -> None:
         no_list.append({"proxyWallet": holder.get("proxyWallet", ""), "amount": dollar_value})
 
 
+def _parse_ts(val) -> float:
+    """Parse a timestamp value (unix int/float or ISO string) to a float epoch."""
+    if not val:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    try:
+        s = str(val).replace("Z", "+00:00")
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return 0.0
+
+
 class WhaleTracker:
 
-    def get_top_traders_from_leaderboard(self, n: int = 50) -> list:
+    # ------------------------------------------------------------------
+    # Leaderboard helpers
+    # ------------------------------------------------------------------
+
+    def _fetch_leaderboard(self, n: int, window: str = None) -> list:
         """
-        Fetch top n traders from the leaderboard.
-        Note: the `pnl` field returned by this API is *unrealized* PnL on current open positions,
-        not all-time profit. It fluctuates daily. Use it as a ranking proxy, not an absolute measure.
-        The API does not support time-window filtering — one call, deduplicated.
+        Try to fetch top n leaderboard entries for a given window param.
+        Returns raw entry list (may be empty if unreachable).
+        window values tried: '1d', '1w', None (= all-time).
         """
-        entries = []
-        for params in [
+        param_sets = []
+        if window:
+            param_sets += [
+                {"limit": n, "window": window, "sortBy": "pnl", "sortDir": "desc"},
+                {"limit": n, "window": window},
+            ]
+        param_sets += [
             {"limit": n, "sortBy": "pnl", "sortDir": "desc"},
-            {"limit": n, "sortBy": "profitAndLoss", "sortDir": "desc"},
             {"limit": n},
-        ]:
+        ]
+        for params in param_sets:
             data = _req(f"{DATA_API}/v1/leaderboard", params)
             if isinstance(data, list) and data:
-                entries = data
-                break
+                return data[:n]
+        return []
 
+    def _entries_to_traders(self, entries: list, source: str) -> list:
+        """Convert raw leaderboard entries to trader dicts, deduplicating by address."""
         seen: dict = {}
         for entry in entries:
-            addr = (
-                entry.get("proxyWallet")
-                or entry.get("address")
-                or entry.get("user")
-                or ""
-            )
+            addr = (entry.get("proxyWallet") or entry.get("address") or entry.get("user") or "")
             if not addr:
                 continue
             try:
-                profit = float(
-                    entry.get("pnl")
-                    or entry.get("profit")
-                    or entry.get("profitAndLoss")
-                    or 0
-                )
+                pnl = float(entry.get("pnl") or entry.get("profit") or entry.get("profitAndLoss") or 0)
             except (TypeError, ValueError):
-                profit = 0.0
-            if addr not in seen or profit > seen[addr]["volume"]:
-                name = (
-                    entry.get("userName")
-                    or entry.get("pseudonym")
-                    or entry.get("name")
-                    or entry.get("xUsername")
-                    or ""
-                )
-                seen[addr] = {"address": addr, "volume": profit, "name": name, "source": "leaderboard"}
+                pnl = 0.0
+            name = (entry.get("userName") or entry.get("pseudonym") or
+                    entry.get("name") or entry.get("xUsername") or "")
+            rank = int(entry.get("rank") or 0)
+            if addr not in seen:
+                seen[addr] = {"address": addr, "volume": pnl, "name": name,
+                              "rank": rank, "source": source}
+        return list(seen.values())
 
-        traders = list(seen.values())
-        traders.sort(key=lambda t: t["volume"], reverse=True)
-
-        lines = [f"  ┌─ WHALE LEADERBOARD ── top {len(traders)} traders by unrealized PnL"]
-        for i, t in enumerate(traders, 1):
-            label = t["name"] or t["address"][:14] + "..."
-            lines.append(f"  │  {i:2d}.  ${t['volume']:>12,.0f}  {label}")
-        lines.append(f"  └─────────────────────────────────────────────────")
-        print("\n".join(lines))
-        return traders
-
-    def get_top_traders_from_trades(self, n: int = 30) -> list:
+    def _top_traders_from_trade_feed(self, n: int, since_ts: float, label: str) -> list:
         """
-        Fallback: discover active traders from the recent global trade feed.
-        Scans 2000 recent trades and returns highest USD-volume traders.
+        Derive top n traders by USD volume from the global trade feed since `since_ts`.
+        Used when the leaderboard window param is ignored.
         """
-        # Fetch a larger window to capture infrequent large traders
-        data = _req(f"{DATA_API}/trades", {"limit": 2000, "takerOnly": "false"})
+        import time
+        data = _req(f"{DATA_API}/trades", {"limit": 5000, "takerOnly": "false"})
         if not isinstance(data, list) or not data:
             return []
 
-        volume_by_wallet: dict = defaultdict(float)
-        name_by_wallet:   dict = {}
+        vol_by_wallet:  dict = defaultdict(float)
+        name_by_wallet: dict = {}
         for trade in data:
+            ts = _parse_ts(trade.get("timestamp") or trade.get("createdAt"))
+            if ts < since_ts:
+                continue
             wallet = trade.get("proxyWallet", "")
             if not wallet:
                 continue
             try:
-                dollar_vol = float(trade.get("size", 0) or 0) * float(trade.get("price", 0) or 0)
+                dvol = float(trade.get("size", 0) or 0) * float(trade.get("price", 0) or 0)
             except (TypeError, ValueError):
                 continue
-            volume_by_wallet[wallet] += dollar_vol
+            vol_by_wallet[wallet] += dvol
             if wallet not in name_by_wallet:
-                name = trade.get("pseudonym") or trade.get("name") or ""
-                name_by_wallet[wallet] = name
+                name_by_wallet[wallet] = trade.get("pseudonym") or trade.get("name") or ""
 
         traders = [
-            {"address": addr, "volume": vol, "name": name_by_wallet.get(addr, ""), "source": "trades"}
-            for addr, vol in volume_by_wallet.items()
+            {"address": addr, "volume": vol, "name": name_by_wallet.get(addr, ""),
+             "rank": 0, "source": label}
+            for addr, vol in vol_by_wallet.items()
             if vol >= MIN_WHALE_VOLUME
         ]
         traders.sort(key=lambda t: t["volume"], reverse=True)
-
-        if traders:
-            top = traders[:n]
-            print(f"  [WhaleTracker] Trade feed: {len(traders)} active traders, top {len(top)} (≥${MIN_WHALE_VOLUME:,.0f}):")
-            for t in top[:10]:
-                label = t["name"] or t["address"][:12] + "..."
-                print(f"    ${t['volume']:>9,.0f} vol — {label}")
         return traders[:n]
+
+    def get_top_traders_all_windows(self, n: int = 10) -> tuple:
+        """
+        Fetch top n traders from the today, weekly, and all-time leaderboard windows.
+
+        Strategy:
+          1. Fetch all-time leaderboard (no window param) — always works.
+          2. Try 'window=1d' and 'window=1w' leaderboard params.
+             If the top address is the same as all-time, the API is ignoring the
+             window param, so fall back to filtering the trade feed by timestamp.
+          3. Return (today_list, weekly_list, alltime_list) each with up to n entries.
+        """
+        import time
+        now = time.time()
+
+        alltime_entries = self._fetch_leaderboard(n)
+        today_entries   = self._fetch_leaderboard(n, window="1d")
+        weekly_entries  = self._fetch_leaderboard(n, window="1w")
+
+        alltime = self._entries_to_traders(alltime_entries, "alltime")
+
+        # Detect if window params are being respected
+        top_all = alltime[0]["address"] if alltime else ""
+        top_day = (self._entries_to_traders(today_entries,  "today")[0]["address"]
+                   if today_entries else "")
+        top_wk  = (self._entries_to_traders(weekly_entries, "weekly")[0]["address"]
+                   if weekly_entries else "")
+
+        if top_day and top_day != top_all:
+            today = self._entries_to_traders(today_entries, "today")
+        else:
+            # Window param ignored — derive from trade feed
+            today = self._top_traders_from_trade_feed(n, now - 86_400, "today")
+
+        if top_wk and top_wk != top_all:
+            weekly = self._entries_to_traders(weekly_entries, "weekly")
+        else:
+            weekly = self._top_traders_from_trade_feed(n, now - 604_800, "weekly")
+
+        return today, weekly, alltime
+
+    def _print_leaderboard(self, today: list, weekly: list, alltime: list) -> None:
+        """Print the three-window leaderboard box as a single batched print."""
+        def _rows(lst, n=10):
+            rows = []
+            for i, t in enumerate(lst[:n], 1):
+                label = t["name"] or t["address"][:14] + "..."
+                rows.append(f"  │  {i:2d}.  ${t['volume']:>12,.0f}  {label}  [{t['source']}]")
+            return rows
+
+        lines = ["  ┌─ WHALE LEADERBOARD ── today / weekly / all-time top 10"]
+        lines.append("  │")
+        lines.append("  │  TODAY (by 24h volume):")
+        lines += _rows(today) or ["  │    (no data)"]
+        lines.append("  │")
+        lines.append("  │  WEEKLY (by 7d volume):")
+        lines += _rows(weekly) or ["  │    (no data)"]
+        lines.append("  │")
+        lines.append("  │  ALL-TIME (by unrealized PnL):")
+        lines += _rows(alltime) or ["  │    (no data)"]
+        lines.append("  └─────────────────────────────────────────────────")
+        print("\n".join(lines))
 
     def get_positions(self, address: str) -> list:
         """Open positions for one trader — skip resolved markets."""
@@ -220,33 +278,39 @@ class WhaleTracker:
             and not p.get("redeemable", False)
         ]
 
-    def get_whale_signals(self, top_n: int = 50) -> list:
+    def get_whale_signals(self, top_n: int = 10) -> list:
         """
-        Scan top traders' positions and return consensus signals:
-        markets where ≥MIN_WHALES_AGREE independent whales hold the same side
+        Fetch top 10 traders from today, weekly, and all-time leaderboard windows,
+        combine into a unique set, then scan their open positions for consensus signals:
+        markets where >= MIN_WHALES_AGREE independent whales hold the same side
         AND the price hasn't drifted more than MAX_PRICE_DRIFT from their avg entry.
 
-        Discovery order:
-          1. /v1/leaderboard — true top traders by all-time profit (the real whales)
-          2. /trades fallback — recent high-volume traders if leaderboard is blocked
-
-        Returns list of dicts sorted by (whale_count DESC, combined_volume DESC):
+        Returns list of dicts sorted by freshness, whale_count, volume:
         {
           title, asset, side,
           avg_entry, cur_price, price_drift,
-          whale_count, whale_volume_total, whale_profit_total (= volume, for compat)
+          whale_count, whale_volume_total, whale_profit_total,
+          new_whale_count, is_fresh, first_seen
         }
         """
-        # Try leaderboard first (real whales), fall back to trades
-        traders = self.get_top_traders_from_leaderboard(top_n)
-        source = "leaderboard"
+        today, weekly, alltime = self.get_top_traders_all_windows(top_n)
+        self._print_leaderboard(today, weekly, alltime)
+
+        # Combine all three windows, deduplicate by address
+        seen_addrs: set = set()
+        traders: list = []
+        for lst in (alltime, weekly, today):  # alltime first so rank ordering is preserved
+            for t in lst:
+                if t["address"] not in seen_addrs:
+                    seen_addrs.add(t["address"])
+                    traders.append(t)
+
         if not traders:
-            print("  [WhaleTracker] Leaderboard unavailable — falling back to trade feed scan.")
-            traders = self.get_top_traders_from_trades(top_n)
-            source = "trades"
-        if not traders:
-            print("  [WhaleTracker] No traders found from either source.")
+            print("  [WhaleTracker] No traders found from any window.")
             return []
+
+        print(f"  [WhaleTracker] Scanning {len(traders)} unique wallets "
+              f"({len(alltime)} all-time + {len(weekly)} weekly + {len(today)} today)")
 
 
         buckets: dict = defaultdict(lambda: {
