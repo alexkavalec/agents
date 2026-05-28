@@ -252,18 +252,35 @@ class Trader:
                 from agents.connectors.whale_tracker import WhaleTracker
                 whale_signals = WhaleTracker().get_whale_signals()
                 if whale_signals:
-                    sig_lines = [f"  ┌─ WHALE SIGNALS ── {len(whale_signals)} consensus position(s)"]
+                    fresh   = [s for s in whale_signals if s.get("is_fresh")]
+                    ongoing = [s for s in whale_signals if not s.get("is_fresh")]
+                    sig_lines = [
+                        f"  ┌─ WHALE SIGNALS ── {len(whale_signals)} consensus"
+                        f"  ({len(fresh)} 🆕 new  /  {len(ongoing)} ongoing)"
+                    ]
                     for s in whale_signals[:5]:
+                        badge     = "🆕" if s.get("is_fresh") else "  "
+                        new_label = (f"  +{s['new_whale_count']} new" if s.get("new_whale_count") else "")
                         sig_lines.append(
-                            f"  │  {s['whale_count']}x  {s['side'].upper():<20s}  "
+                            f"  │ {badge} {s['whale_count']}x  {s['side'].upper():<20s}  "
                             f"entry {s['avg_entry']:.3f} → now {s['cur_price']:.3f}  "
-                            f"({s['price_drift']:.0%} drift)  \"{s['title'][:40]}\""
+                            f"({s['price_drift']:.0%} drift){new_label}  \"{s['title'][:35]}\""
                         )
                     if len(whale_signals) > 5:
                         sig_lines.append(f"  │  … +{len(whale_signals)-5} more")
                     sig_lines.append(f"  └───────────────────────────────────────────────────────")
                     print("\n".join(sig_lines))
                     print("")
+                    # Discord alert for fresh signals from top-10 whales
+                    if fresh:
+                        alert_lines = [f"🐋 **FRESH WHALE SIGNAL(S)** — {len(fresh)} new position(s) opened this cycle:"]
+                        for s in fresh[:3]:
+                            alert_lines.append(
+                                f"> 🆕 {s['new_whale_count']} new whale(s) — {s['side'].upper()} | "
+                                f"entry {s['avg_entry']:.3f}  now {s['cur_price']:.3f}\n"
+                                f">    \"{s['title'][:100]}\""
+                            )
+                        _discord("\n".join(alert_lines))
             except Exception as e:
                 print(f"  WhaleTracker error (non-fatal): {e}")
 
@@ -283,24 +300,28 @@ class Trader:
             print(f" → {len(markets)} markets")
 
             # ── WHALE BOOST: promote whale-signalled markets to the top of the list ──
-            # If a whale signal title matches a market question, move that market first
-            # so the AI is more likely to select it.
+            # Fresh signals (new whale entries this cycle) score 2; ongoing score 1.
             if whale_signals:
-                whale_titles = [s["title"].lower() for s in whale_signals]
+                whale_index = {
+                    s["title"].lower(): (2 if s.get("is_fresh") else 1)
+                    for s in whale_signals
+                }
 
                 def _whale_score(m: dict) -> int:
                     q = (m.get("question") or "").lower()
                     q_words = set(w for w in q.split() if len(w) > 3)
-                    for wt in whale_titles:
+                    best = 0
+                    for wt, score in whale_index.items():
                         wt_words = set(w for w in wt.split() if len(w) > 3)
                         if len(q_words & wt_words) >= 2:
-                            return 1
-                    return 0
+                            best = max(best, score)
+                    return best
 
                 markets = sorted(markets, key=_whale_score, reverse=True)
-                boosted = sum(1 for m in markets if _whale_score(m) > 0)
-                if boosted:
-                    print(f"  Whale boost: {boosted} market(s) moved to top")
+                fresh_b   = sum(1 for m in markets if _whale_score(m) == 2)
+                ongoing_b = sum(1 for m in markets if _whale_score(m) == 1)
+                if fresh_b or ongoing_b:
+                    print(f"  Whale boost: {fresh_b} 🆕 fresh  +  {ongoing_b} ongoing moved to top")
 
             # Collect open position titles for correlation filtering (soft + hard)
             open_pos_questions = []
