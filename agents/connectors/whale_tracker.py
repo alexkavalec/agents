@@ -99,6 +99,10 @@ class WhaleTracker:
                 break
 
         seen: dict = {}
+        if entries:
+            # Debug: show raw fields for top entry so we can verify the right PnL field
+            top = entries[0]
+            print(f"  [WhaleTracker] raw top entry: { {k: v for k, v in top.items() if k not in ('profileImage',)} }")
         for entry in entries:
             addr = (
                 entry.get("proxyWallet")
