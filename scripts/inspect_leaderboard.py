@@ -1,163 +1,81 @@
 """
-Inspect top-10 traders from today, weekly, and all-time leaderboard windows.
-Hits data-api.polymarket.com directly to verify what the API actually returns.
+Inspect Polymarket leaderboards by scraping polymarket.com/leaderboard/overall/{window}/profit.
+The /v1/leaderboard API ignores window params — page scraping is the only way to get windowed data.
 
 Usage:
     python scripts/inspect_leaderboard.py [--positions]
-
-Options:
-    --positions   Also fetch open positions for each wallet found
 """
 
 import sys
-import time
+import re
+import json
 import requests
-from collections import defaultdict
 
-DATA_API  = "https://data-api.polymarket.com"
-GAMMA_API = "https://gamma-api.polymarket.com"
-CLOB_API  = "https://clob.polymarket.com"
-HEADERS   = {"User-Agent": "PolymarketTradingBot/1.0"}
+PM_WEB  = "https://polymarket.com"
+DATA_API = "https://data-api.polymarket.com"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html",
+}
 SHOW_POSITIONS = "--positions" in sys.argv
 
 
-def req(url, params=None):
-    try:
-        r = requests.get(url, params=params or {}, headers=HEADERS, timeout=15)
-        print(f"  [{r.status_code}] {url}{'?' + '&'.join(f'{k}={v}' for k,v in (params or {}).items()) if params else ''}")
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        print(f"  [ERR] {e}")
-    return None
-
-
-def parse_ts(val) -> float:
-    if not val:
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-    try:
-        from datetime import datetime, timezone
-        return datetime.fromisoformat(str(val).replace("Z", "+00:00")).timestamp()
-    except Exception:
-        return 0.0
-
-
-def fetch_leaderboard(n=10, window=None):
-    params = {"limit": n, "sortBy": "pnl", "sortDir": "desc"}
-    if window:
-        params["window"] = window
-    return req(DATA_API + "/v1/leaderboard", params) or []
-
-
-def entries_to_rows(entries, n=10):
-    rows = []
-    for e in entries[:n]:
-        addr  = e.get("proxyWallet") or e.get("address") or "?"
-        name  = e.get("userName") or e.get("pseudonym") or e.get("name") or ""
-        pnl   = float(e.get("pnl") or e.get("profit") or 0)
-        rank  = e.get("rank") or "?"
-        vol   = e.get("vol") or 0
-        label = name or addr[:18] + "..."
-        rows.append({"addr": addr, "name": label, "pnl": pnl, "rank": rank, "vol": vol})
-    return rows
-
-
-def print_table(title, rows):
-    print(f"\n  {title}")
-    print(f"  {'rank':<6}{'address':<22}{'name':<28}{'pnl':>14}{'vol':>10}")
-    print("  " + "-" * 82)
-    for i, r in enumerate(rows, 1):
-        addr_short = r["addr"][:20]
-        print(f"  {str(r['rank']):<6}{addr_short:<22}{r['name'][:26]:<28}${r['pnl']:>12,.0f}{r['vol']:>10}")
-
-
-def top_from_trade_feed(n=10, since_ts=0, label=""):
-    data = req(DATA_API + "/trades", {"limit": 10000, "takerOnly": "false"})
-    if not isinstance(data, list):
-        return []
-    vol_by_wallet = defaultdict(float)
-    name_by_wallet = {}
-    for trade in data:
-        ts = parse_ts(trade.get("timestamp") or trade.get("createdAt"))
-        if ts < since_ts:
-            continue
-        wallet = trade.get("proxyWallet", "")
-        if not wallet:
-            continue
-        try:
-            dvol = float(trade.get("size", 0) or 0) * float(trade.get("price", 0) or 0)
-        except Exception:
-            continue
-        vol_by_wallet[wallet] += dvol
-        if wallet not in name_by_wallet:
-            name_by_wallet[wallet] = trade.get("pseudonym") or trade.get("name") or ""
-    traders = sorted(
-        [{"addr": a, "name": name_by_wallet.get(a, ""), "pnl": v, "rank": "-", "vol": 0}
-         for a, v in vol_by_wallet.items() if v >= 500],
-        key=lambda x: x["pnl"], reverse=True
+def scrape_window(window: str, n: int = 20) -> tuple:
+    """
+    Returns (by_profit, by_volume) each a list of dicts for the given window.
+    window: 'daily' | 'weekly' | 'all'
+    """
+    url = f"{PM_WEB}/leaderboard/overall/{window}/profit"
+    r = requests.get(url, headers=HEADERS, timeout=15)
+    print(f"  [{r.status_code}] {url}")
+    if r.status_code != 200:
+        return [], []
+    arrays = re.findall(
+        r'\[(\{"rank"[^\[\]]{20,}"proxyWallet"[^\[\]]*(?:\{[^\{\}]*\}[^\[\]]*)*)\]',
+        r.text,
     )
-    return traders[:n]
+    if len(arrays) < 2:
+        print(f"  WARNING: only {len(arrays)} array(s) found in page")
+        return [], []
+    by_vol    = json.loads("[" + arrays[0] + "]")
+    by_profit = json.loads("[" + arrays[1] + "]")
+    return by_profit[:n], by_vol[:n]
 
 
-# ─── API health check ─────────────────────────────────────────────────────────
+def print_table(title: str, rows: list) -> None:
+    print(f"\n  {title}")
+    print(f"  {'#':<5} {'name':<26} {'pnl':>14}  {'volume':>14}")
+    print("  " + "-" * 65)
+    for e in rows:
+        name = e.get("name") or e.get("pseudonym") or (e.get("proxyWallet", "")[:20] + "...")
+        pnl  = float(e.get("pnl") or 0)
+        vol  = float(e.get("volume") or 0)
+        rank = e.get("rank", "?")
+        print(f"  {str(rank):<5} {name:<26} ${pnl:>13,.0f}  ${vol:>13,.0f}")
+
+
+# ─── Fetch all three windows ──────────────────────────────────────────────────
 print("\n" + "=" * 70)
-print("  API HEALTH CHECK")
-print("=" * 70)
-req(DATA_API  + "/v1/leaderboard", {"limit": 1})
-req(GAMMA_API + "/markets",        {"limit": 1})
-req(CLOB_API  + "/markets",        {"params": 1})
-
-# ─── Leaderboard windows ──────────────────────────────────────────────────────
-print("\n" + "=" * 70)
-print("  LEADERBOARD — RAW WINDOW COMPARISON")
+print("  LEADERBOARD — polymarket.com page scrape (real windowed PnL)")
 print("=" * 70)
 
-alltime_raw = fetch_leaderboard(10, window=None)
-today_raw   = fetch_leaderboard(10, window="1d")
-weekly_raw  = fetch_leaderboard(10, window="1w")
+daily_profit,  daily_vol  = scrape_window("daily",  20)
+weekly_profit, weekly_vol = scrape_window("weekly", 20)
+alltime_profit, alltime_vol = scrape_window("all",  20)
 
-alltime = entries_to_rows(alltime_raw)
-today_lb = entries_to_rows(today_raw)
-weekly_lb = entries_to_rows(weekly_raw)
-
-top_all = alltime[0]["addr"]    if alltime    else ""
-top_day = today_lb[0]["addr"]   if today_lb   else ""
-top_wk  = weekly_lb[0]["addr"]  if weekly_lb  else ""
-
-window_works = {
-    "1d": bool(top_day and top_day != top_all),
-    "1w": bool(top_wk  and top_wk  != top_all),
-}
-print(f"\n  window=1d respected: {window_works['1d']}")
-print(f"  window=1w respected: {window_works['1w']}")
-
-print_table("ALL-TIME top 10 (no window param):", alltime)
-if window_works["1d"]:
-    print_table("TODAY top 10 (window=1d):", today_lb)
-else:
-    print(f"\n  window=1d ignored — falling back to trade feed (last 24h)...")
-    today_feed = top_from_trade_feed(10, since_ts=time.time() - 86_400, label="today")
-    print_table("TODAY top 10 (from /trades last 24h, $500+ volume):", today_feed)
-
-if window_works["1w"]:
-    print_table("WEEKLY top 10 (window=1w):", weekly_lb)
-else:
-    print(f"\n  window=1w ignored — falling back to trade feed (last 7d)...")
-    weekly_feed = top_from_trade_feed(10, since_ts=time.time() - 604_800, label="weekly")
-    print_table("WEEKLY top 10 (from /trades last 7d, $500+ volume):", weekly_feed)
+print_table("TODAY — top 20 by 24h profit:", daily_profit)
+print_table("WEEKLY — top 20 by 7d profit:", weekly_profit)
+print_table("ALL-TIME — top 20 by total profit:", alltime_profit)
 
 # ─── Combined unique wallet set ───────────────────────────────────────────────
-seen = set()
+seen  = set()
 combined = []
-for lst in (alltime,
-            today_lb  if window_works["1d"] else today_feed  if "today_feed"  in dir() else [],
-            weekly_lb if window_works["1w"] else weekly_feed if "weekly_feed" in dir() else []):
-    for t in lst:
-        if t["addr"] not in seen:
-            seen.add(t["addr"])
-            combined.append(t)
+for lst in (alltime_profit, weekly_profit, daily_profit):
+    for e in lst:
+        addr = e.get("proxyWallet", "")
+        if addr and addr not in seen:
+            seen.add(addr)
+            combined.append(e)
 
 print(f"\n  Total unique wallets to watch: {len(combined)}")
 
@@ -166,14 +84,20 @@ if SHOW_POSITIONS:
     print("\n" + "=" * 70)
     print("  OPEN POSITIONS PER WALLET")
     print("=" * 70)
-    for t in combined:
-        data = req(DATA_API + "/positions",
-                   {"user": t["addr"], "limit": 100, "sizeThreshold": "0.01"})
+    for e in combined:
+        addr  = e.get("proxyWallet", "")
+        label = e.get("name") or e.get("pseudonym") or addr[:18] + "..."
+        r = requests.get(
+            DATA_API + "/positions",
+            params={"user": addr, "limit": 100, "sizeThreshold": "0.01"},
+            headers={"User-Agent": "PolymarketTradingBot/1.0"},
+            timeout=10,
+        )
+        data = r.json() if r.status_code == 200 else []
         if not isinstance(data, list):
             continue
         open_pos = [p for p in data
                     if float(p.get("size", 0) or 0) > 0.01 and not p.get("redeemable")]
-        label = t["name"] or t["addr"][:18] + "..."
         print(f"\n  {label}  ({len(open_pos)} open positions)")
         for p in sorted(open_pos,
                         key=lambda x: float(x.get("currentValue", 0) or 0),

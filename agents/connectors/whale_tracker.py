@@ -21,11 +21,17 @@ All endpoints are public — no API key required.
 """
 
 import json
+import re
 import requests
 from collections import defaultdict
 from datetime import datetime, timezone
 
-DATA_API = "https://data-api.polymarket.com"
+DATA_API   = "https://data-api.polymarket.com"
+PM_WEB     = "https://polymarket.com"
+PM_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html",
+}
 WHALE_STATE_FILE = "whale_positions_state.json"
 
 # Minimum all-time profit to qualify as a true whale from the leaderboard ($50k+)
@@ -125,122 +131,57 @@ class WhaleTracker:
     # Leaderboard helpers
     # ------------------------------------------------------------------
 
-    def _fetch_leaderboard(self, n: int, window: str = None) -> list:
+    def _scrape_leaderboard_page(self, window: str, n: int) -> list:
         """
-        Try to fetch top n leaderboard entries for a given window param.
-        Returns raw entry list (may be empty if unreachable).
-        window values tried: '1d', '1w', None (= all-time).
-        """
-        param_sets = []
-        if window:
-            param_sets += [
-                {"limit": n, "window": window, "sortBy": "pnl", "sortDir": "desc"},
-                {"limit": n, "window": window},
-            ]
-        param_sets += [
-            {"limit": n, "sortBy": "pnl", "sortDir": "desc"},
-            {"limit": n},
-        ]
-        for params in param_sets:
-            data = _req(f"{DATA_API}/v1/leaderboard", params)
-            if isinstance(data, list) and data:
-                return data[:n]
-        return []
+        Scrape top-n traders from polymarket.com/leaderboard/overall/{window}/profit.
+        The page embeds two JSON arrays: index 0 = by volume, index 1 = by profit.
+        Returns trader dicts with address, volume (= PnL), name, rank, source.
 
-    def _entries_to_traders(self, entries: list, source: str) -> list:
-        """Convert raw leaderboard entries to trader dicts, deduplicating by address."""
-        seen: dict = {}
-        for entry in entries:
-            addr = (entry.get("proxyWallet") or entry.get("address") or entry.get("user") or "")
-            if not addr:
-                continue
-            try:
-                pnl = float(entry.get("pnl") or entry.get("profit") or entry.get("profitAndLoss") or 0)
-            except (TypeError, ValueError):
-                pnl = 0.0
-            name = (entry.get("userName") or entry.get("pseudonym") or
-                    entry.get("name") or entry.get("xUsername") or "")
-            rank = int(entry.get("rank") or 0)
-            if addr not in seen:
-                seen[addr] = {"address": addr, "volume": pnl, "name": name,
-                              "rank": rank, "source": source}
-        return list(seen.values())
-
-    def _top_traders_from_trade_feed(self, n: int, since_ts: float, label: str) -> list:
+        window: 'daily' | 'weekly' | 'all'
         """
-        Derive top n traders by USD volume from the global trade feed since `since_ts`.
-        Used when the leaderboard window param is ignored.
-        """
-        # Fetch a large batch — platform busy, 5000 trades may cover only a few hours
-        data = _req(f"{DATA_API}/trades", {"limit": 10000, "takerOnly": "false"})
-        if not isinstance(data, list) or not data:
+        url = f"{PM_WEB}/leaderboard/overall/{window}/profit"
+        try:
+            r = requests.get(url, headers=PM_HEADERS, timeout=15)
+            if r.status_code != 200:
+                return []
+            # Two JSON arrays embedded in SSR HTML; index 1 is sorted by profit
+            arrays = re.findall(
+                r'\[(\{"rank"[^\[\]]{20,}"proxyWallet"[^\[\]]*(?:\{[^\{\}]*\}[^\[\]]*)*)\]',
+                r.text,
+            )
+            if len(arrays) < 2:
+                return []
+            entries = json.loads("[" + arrays[1] + "]")
+        except Exception:
             return []
 
-        vol_by_wallet:  dict = defaultdict(float)
-        name_by_wallet: dict = {}
-        for trade in data:
-            ts = _parse_ts(trade.get("timestamp") or trade.get("createdAt"))
-            if ts < since_ts:
+        traders = []
+        seen: set = set()
+        for e in entries[:n]:
+            addr = e.get("proxyWallet") or ""
+            if not addr or addr in seen:
                 continue
-            wallet = trade.get("proxyWallet", "")
-            if not wallet:
-                continue
+            seen.add(addr)
             try:
-                dvol = float(trade.get("size", 0) or 0) * float(trade.get("price", 0) or 0)
+                pnl = float(e.get("pnl") or 0)
             except (TypeError, ValueError):
-                continue
-            vol_by_wallet[wallet] += dvol
-            if wallet not in name_by_wallet:
-                name_by_wallet[wallet] = trade.get("pseudonym") or trade.get("name") or ""
-
-        MIN_VOL = 500.0  # lower threshold for time-window feeds
-        traders = [
-            {"address": addr, "volume": vol, "name": name_by_wallet.get(addr, ""),
-             "rank": 0, "source": label}
-            for addr, vol in vol_by_wallet.items()
-            if vol >= MIN_VOL
-        ]
-        traders.sort(key=lambda t: t["volume"], reverse=True)
-        return traders[:n]
+                pnl = 0.0
+            name = e.get("name") or e.get("pseudonym") or ""
+            rank = int(e.get("rank") or 0)
+            traders.append({"address": addr, "volume": pnl, "name": name,
+                            "rank": rank, "source": window})
+        return traders
 
     def get_top_traders_all_windows(self, n: int = 10) -> tuple:
         """
-        Fetch top n traders from the today, weekly, and all-time leaderboard windows.
+        Fetch top n traders from the daily, weekly, and all-time leaderboard windows
+        by scraping polymarket.com/leaderboard/overall/{window}/profit (SSR page data).
 
-        Strategy:
-          1. Fetch all-time leaderboard (no window param) — always works.
-          2. Try 'window=1d' and 'window=1w' leaderboard params.
-             If the top address is the same as all-time, the API is ignoring the
-             window param, so fall back to filtering the trade feed by timestamp.
-          3. Return (today_list, weekly_list, alltime_list) each with up to n entries.
+        Returns (today_list, weekly_list, alltime_list) each with up to n entries.
         """
-        import time
-        now = time.time()
-
-        alltime_entries = self._fetch_leaderboard(n)
-        today_entries   = self._fetch_leaderboard(n, window="1d")
-        weekly_entries  = self._fetch_leaderboard(n, window="1w")
-
-        alltime = self._entries_to_traders(alltime_entries, "alltime")
-
-        # Detect if window params are being respected
-        top_all = alltime[0]["address"] if alltime else ""
-        top_day = (self._entries_to_traders(today_entries,  "today")[0]["address"]
-                   if today_entries else "")
-        top_wk  = (self._entries_to_traders(weekly_entries, "weekly")[0]["address"]
-                   if weekly_entries else "")
-
-        if top_day and top_day != top_all:
-            today = self._entries_to_traders(today_entries, "today")
-        else:
-            # Window param ignored — derive from trade feed
-            today = self._top_traders_from_trade_feed(n, now - 86_400, "today")
-
-        if top_wk and top_wk != top_all:
-            weekly = self._entries_to_traders(weekly_entries, "weekly")
-        else:
-            weekly = self._top_traders_from_trade_feed(n, now - 604_800, "weekly")
-
+        today   = self._scrape_leaderboard_page("daily",  n)
+        weekly  = self._scrape_leaderboard_page("weekly", n)
+        alltime = self._scrape_leaderboard_page("all",    n)
         return today, weekly, alltime
 
     def _format_leaderboard(self, today: list, weekly: list, alltime: list) -> list:
@@ -249,18 +190,18 @@ class WhaleTracker:
             rows = []
             for i, t in enumerate(lst[:n], 1):
                 label = t["name"] or t["address"][:14] + "..."
-                rows.append(f"  │  {i:2d}.  ${t['volume']:>12,.0f}  {label}  [{t['source']}]")
+                rows.append(f"  │  {i:2d}.  ${t['volume']:>12,.0f}  {label}")
             return rows
 
-        lines = ["  ┌─ WHALE LEADERBOARD ── today / weekly / all-time top 10"]
+        lines = ["  ┌─ WHALE LEADERBOARD ── today / weekly / all-time top 10 (by PnL)"]
         lines.append("  │")
-        lines.append("  │  TODAY (by 24h volume):")
+        lines.append("  │  TODAY (24h profit):")
         lines += _rows(today) or ["  │    (no data)"]
         lines.append("  │")
-        lines.append("  │  WEEKLY (by 7d volume):")
+        lines.append("  │  WEEKLY (7d profit):")
         lines += _rows(weekly) or ["  │    (no data)"]
         lines.append("  │")
-        lines.append("  │  ALL-TIME (by unrealized PnL):")
+        lines.append("  │  ALL-TIME (total profit):")
         lines += _rows(alltime) or ["  │    (no data)"]
         lines.append("  └─────────────────────────────────────────────────")
         return lines
