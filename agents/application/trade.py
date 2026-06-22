@@ -405,7 +405,7 @@ class Trader:
             # Hard cap: an edge > 40pp almost always means the AI hallucinated a probability
             # that the live Polymarket crowd would never price. Reject immediately.
             if edge > MAX_EDGE:
-                print(f"  ✗ Edge {edge:.3f} exceeds {MAX_EDGE} cap — likely AI hallucination. Skipping.")
+                print(f"  ✗ Edge {edge:.3f} exceeds {MAX_EDGE} cap — likely AI hallucination. Skipping.", flush=True)
                 return
 
             # Two-tier system:
@@ -420,7 +420,7 @@ class Trader:
             else:
                 reason = (f"edge {edge:.3f} < {MIN_EDGE_CONVICTION}" if edge < MIN_EDGE_CONVICTION
                           else f"edge {edge:.3f} < {MIN_EDGE} and confidence {confidence} ≠ HIGH")
-                print(f"  ✗ No trade: {reason}. Skipping.")
+                print(f"  ✗ No trade: {reason}. Skipping.", flush=True)
                 self._record_skip(state, question)
                 return
 
@@ -438,7 +438,7 @@ class Trader:
                     print(f"  Size bumped ${trade_amount:.2f} → ${ABSOLUTE_MIN_TRADE:.2f} (minimum order)")
                     trade_amount = ABSOLUTE_MIN_TRADE
                 else:
-                    print(f"  ✗ Trade size ${trade_amount:.2f} below ${ABSOLUTE_MIN_TRADE} minimum — balance too low. Skipping.")
+                    print(f"  ✗ Trade size ${trade_amount:.2f} below ${ABSOLUTE_MIN_TRADE} minimum — balance too low. Skipping.", flush=True)
                     self._record_skip(state, question)
                     return
             print(f"  Size: ${trade_amount:.2f}  (cap ${size_cap:.2f}, daily room ${remaining_daily:.2f})")

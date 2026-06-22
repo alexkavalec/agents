@@ -145,7 +145,7 @@ def run_loop(interval_minutes: int = 30) -> None:
         try:
             trader = Trader()
             trader.one_best_trade()
-            print(f"Trade cycle complete. Sleeping {interval_minutes} minutes...")
+            print(f"Trade cycle complete. Sleeping {interval_minutes} minutes...", flush=True)
         except Exception as e:
             print(f"Error in trade cycle: {e}")
         time.sleep(interval_minutes * 60)
