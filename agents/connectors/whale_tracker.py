@@ -193,29 +193,26 @@ class WhaleTracker:
         return today, weekly, monthly, alltime
 
     def _format_leaderboard(self, today: list, weekly: list, monthly: list, alltime: list) -> list:
-        """Return formatted leaderboard box as a list of lines (no print)."""
-        def _rows(lst, n=10):
-            rows = []
-            for i, t in enumerate(lst[:n], 1):
-                label = t["name"] or t["address"][:14] + "..."
-                rows.append(f"  │  {i:2d}.  ${t['volume']:>12,.0f}  {label}")
-            return rows
+        """Return compact leaderboard box (6 lines) to avoid Railway log-collector splitting."""
+        def _top3(lst):
+            parts = []
+            for t in lst[:3]:
+                name = t["name"] or t["address"][:10] + "..."
+                v = t["volume"]
+                val = (f"${v/1_000_000:.1f}M" if abs(v) >= 1_000_000
+                       else f"${v/1_000:.0f}k" if abs(v) >= 1_000
+                       else f"${v:.0f}")
+                parts.append(f"{name} {val}")
+            return "  |  ".join(parts) if parts else "(no data)"
 
-        lines = ["  ┌─ WHALE LEADERBOARD ── today / weekly / monthly / all-time top 10 (by PnL)"]
-        lines.append("  │")
-        lines.append("  │  TODAY (unrealized PnL on open positions):")
-        lines += _rows(today) or ["  │    (no data)"]
-        lines.append("  │")
-        lines.append("  │  WEEKLY (7d profit):")
-        lines += _rows(weekly) or ["  │    (no data)"]
-        lines.append("  │")
-        lines.append("  │  MONTHLY (30d profit):")
-        lines += _rows(monthly) or ["  │    (no data)"]
-        lines.append("  │")
-        lines.append("  │  ALL-TIME (total profit):")
-        lines += _rows(alltime) or ["  │    (no data)"]
-        lines.append("  └─────────────────────────────────────────────────")
-        return lines
+        return [
+            "  ┌─ WHALE LEADERBOARD ──────────────────────────────────────────────────────",
+            f"  │  TODAY   (unrealized): {_top3(today)}",
+            f"  │  WEEKLY  (7d profit):  {_top3(weekly)}",
+            f"  │  MONTHLY (30d profit): {_top3(monthly)}",
+            f"  │  ALL-TIME:             {_top3(alltime)}",
+            "  └──────────────────────────────────────────────────────────────────────────",
+        ]
 
     def get_positions(self, address: str) -> list:
         """Open positions for one trader — skip resolved markets."""

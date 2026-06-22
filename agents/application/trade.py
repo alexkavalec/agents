@@ -77,9 +77,18 @@ class Trader:
         except Exception:
             pass
         state = {"date": self._today(), "start_balance": current_balance, "spent": 0.0,
-                 "last_trade_time": None, "traded_tokens": []}
+                 "last_trade_time": None, "traded_tokens": [], "recently_skipped": {}}
         self._save_state(state)
         return state
+
+    def _record_skip(self, state: dict, question: str) -> None:
+        """Record a market as recently evaluated-but-skipped (expires after 4h)."""
+        if not question:
+            return
+        rs = state.get("recently_skipped", {})
+        rs[question[:80]] = time.time()
+        state["recently_skipped"] = rs
+        self._save_state(state)
 
     def _save_state(self, state: dict) -> None:
         try:
@@ -307,6 +316,25 @@ class Trader:
                 if fresh_b or ongoing_b:
                     print(f"  Whale boost: {fresh_b} fresh [NEW] + {ongoing_b} ongoing moved to top")
 
+            # Pre-filter: skip markets evaluated but not traded in the last 4h.
+            # Prevents the same market dominating every cycle when edge is marginal.
+            now_ts = time.time()
+            recently_skipped = {k: v for k, v in state.get("recently_skipped", {}).items()
+                                 if now_ts - v < 4 * 3600}
+            state["recently_skipped"] = recently_skipped
+            if recently_skipped:
+                pre_n = len(markets)
+                markets = [
+                    m for m in markets
+                    if m.get("question", "")[:80] not in recently_skipped
+                ]
+                removed = pre_n - len(markets)
+                if removed:
+                    print(f"  Pre-filter: {removed} recently-evaluated market(s) suppressed for 4h")
+                if not markets:
+                    print("  ✗ All markets recently evaluated. Skipping.")
+                    return
+
             # Collect open position titles for correlation filtering (soft + hard)
             open_pos_questions = []
             try:
@@ -393,6 +421,7 @@ class Trader:
                 reason = (f"edge {edge:.3f} < {MIN_EDGE_CONVICTION}" if edge < MIN_EDGE_CONVICTION
                           else f"edge {edge:.3f} < {MIN_EDGE} and confidence {confidence} ≠ HIGH")
                 print(f"  ✗ No trade: {reason}. Skipping.")
+                self._record_skip(state, question)
                 return
 
             amount = self.agent.format_trade_prompt_for_execution(best_trade)
@@ -410,6 +439,7 @@ class Trader:
                     trade_amount = ABSOLUTE_MIN_TRADE
                 else:
                     print(f"  ✗ Trade size ${trade_amount:.2f} below ${ABSOLUTE_MIN_TRADE} minimum — balance too low. Skipping.")
+                    self._record_skip(state, question)
                     return
             print(f"  Size: ${trade_amount:.2f}  (cap ${size_cap:.2f}, daily room ${remaining_daily:.2f})")
 
