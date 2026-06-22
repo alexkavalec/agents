@@ -311,11 +311,11 @@ class Executor:
                     continue
                 markets.append(formatted_market_data)
         if skipped_prices:
-            print(f"  Skipped {skipped_prices} markets with no usable prices")
+            print(f"  Skipped {skipped_prices} markets with no usable prices", flush=True)
         if skipped_filters:
             for reason, count in skipped_filters.items():
-                print(f"  Skipped {count} markets: {reason}")
-        print(f"  {len(markets)} markets with question + usable prices passed all filters")
+                print(f"  Skipped {count} markets: {reason}", flush=True)
+        print(f"  {len(markets)} markets with question + usable prices passed all filters", flush=True)
         return markets
 
     def filter_markets(self, markets: list, open_positions: list = None) -> "list[tuple]":

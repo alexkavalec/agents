@@ -289,9 +289,9 @@ class Trader:
 
             markets = self.agent.map_filtered_events_to_markets(filtered_events)
             if not markets:
-                print(f" → 0 markets. Skipping.")
+                print(f" → 0 markets. Skipping.", flush=True)
                 return
-            print(f" → {len(markets)} markets")
+            print(f" → {len(markets)} markets", flush=True)
 
             # ── WHALE BOOST: promote whale-signalled markets to the top of the list ──
             # Fresh signals (new whale entries this cycle) score 2; ongoing score 1.
@@ -365,7 +365,7 @@ class Trader:
                     return
 
             filtered_markets = self.agent.filter_markets(markets, open_positions=open_pos_questions)
-            print(f"  → {len(filtered_markets)} candidate(s) after AI market selection")
+            print(f"  → {len(filtered_markets)} candidate(s) after AI market selection", flush=True)
             if not filtered_markets:
                 print("  ✗ No markets passed AI filter. Skipping.")
                 return
