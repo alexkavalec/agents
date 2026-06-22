@@ -233,16 +233,18 @@ class WhaleTracker:
         Fetch top 10 traders from today, weekly, and all-time leaderboard windows,
         combine into a unique set, then scan their open positions for consensus signals.
 
-        Returns (signals, log_text) so the caller can print everything as one batched
-        call and avoid Railway log reordering.
+        Returns (signals, leaderboard_text, signals_text) — two separate strings so
+        the caller can print each with flush=True to avoid Railway log reordering.
 
         signals: list of dicts sorted by freshness, whale_count, volume
-        log_text: pre-formatted string covering leaderboard + scan summary + signals box
+        leaderboard_text: leaderboard box only
+        signals_text: scan summary + signals box
         """
-        log: list = []  # accumulate all lines; caller prints at once
+        lb_log: list  = []  # leaderboard section — printed first, separately
+        sig_log: list = []  # scan info + signals box — printed second, separately
 
         today, weekly, monthly, alltime = self.get_top_traders_all_windows(top_n)
-        log.extend(self._format_leaderboard(today, weekly, monthly, alltime))
+        lb_log.extend(self._format_leaderboard(today, weekly, monthly, alltime))
 
         # Combine all four windows, deduplicate by address
         seen_addrs: set = set()
@@ -254,10 +256,10 @@ class WhaleTracker:
                     traders.append(t)
 
         if not traders:
-            log.append("  [WhaleTracker] No traders found from any window.")
-            return [], "\n".join(log)
+            sig_log.append("  [WhaleTracker] No traders found from any window.")
+            return [], "\n".join(lb_log), "\n".join(sig_log)
 
-        log.append(
+        sig_log.append(
             f"  [WhaleTracker] Scanning {len(traders)} unique wallets "
             f"({len(alltime)} all-time + {len(monthly)} monthly + {len(weekly)} weekly + {len(today)} today)"
         )
@@ -363,27 +365,27 @@ class WhaleTracker:
             reverse=True,
         )
 
-        # Build signals box into log lines
+        # Build signals box into sig_log lines
         if signals:
             fresh_n   = sum(1 for s in signals if s.get("is_fresh"))
             ongoing_n = len(signals) - fresh_n
-            log.append(
+            sig_log.append(
                 f"  ┌─ WHALE SIGNALS ── {len(signals)} consensus  "
                 f"({fresh_n} new  /  {ongoing_n} ongoing)"
             )
             for s in signals[:5]:
                 tag       = "[NEW]" if s.get("is_fresh") else "     "
                 new_label = (f"  +{s['new_whale_count']} new" if s.get("new_whale_count") else "")
-                log.append(
+                sig_log.append(
                     f"  │ {tag} {s['whale_count']}x  {s['side'].upper():<20s}  "
                     f"entry {s['avg_entry']:.3f} -> now {s['cur_price']:.3f}  "
                     f"({s['price_drift']:.0%} drift){new_label}  \"{s['title'][:35]}\""
                 )
             if len(signals) > 5:
-                log.append(f"  │  ... +{len(signals)-5} more")
-            log.append(f"  └───────────────────────────────────────────────────────")
+                sig_log.append(f"  │  ... +{len(signals)-5} more")
+            sig_log.append(f"  └───────────────────────────────────────────────────────")
 
-        return signals, "\n".join(log)
+        return signals, "\n".join(lb_log), "\n".join(sig_log)
 
     def get_market_holders(self, condition_id: str) -> str:
         """

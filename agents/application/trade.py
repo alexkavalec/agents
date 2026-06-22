@@ -259,10 +259,11 @@ class Trader:
             whale_signals = []
             try:
                 from agents.connectors.whale_tracker import WhaleTracker
-                whale_signals, whale_log = WhaleTracker().get_whale_signals()
-                # Print leaderboard + signals as one batched call to avoid Railway log reordering
-                print(whale_log)
-                print("")
+                whale_signals, whale_lb, whale_sig = WhaleTracker().get_whale_signals()
+                # Two separate flush=True prints keep each section small enough that
+                # Railway's log collector won't split and reorder them.
+                print(whale_lb, flush=True)
+                print(whale_sig, flush=True)
                 # Discord alert for fresh signals
                 fresh = [s for s in whale_signals if s.get("is_fresh")]
                 if fresh:
