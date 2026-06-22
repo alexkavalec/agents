@@ -1028,7 +1028,7 @@ class DataEnricher:
         if not keywords:
             return ""
 
-        print(f"  [DataEnricher] Fetching live context for: {keywords!r}")
+        print(f"  [DataEnricher] Fetching live context for: {keywords!r}", flush=True)
 
         api_sports = self._get_api_sports(question)
         metaculus  = self._get_metaculus(keywords)
@@ -1041,6 +1041,30 @@ class DataEnricher:
         reddit     = self._get_reddit(keywords)
         wiki       = self._get_wikipedia_pageviews(keywords)
         trends     = self._get_google_trends(keywords)
+
+        # One-line source status so it's obvious what's working each cycle
+        def _ok(v):
+            if isinstance(v, dict):  return bool(v.get("predictions") or v.get("odds") or v.get("scoreboard") or v.get("teams"))
+            return bool(v)
+        no_key = []
+        if not self.api_sports_key: no_key.append("api-sports")
+        if not self.tavily_key:     no_key.append("tavily")
+        if not self.news_api_key:   no_key.append("news")
+        if not self.twitter_bearer: no_key.append("twitter")
+        fired = [n for n, v in [("espn", espn), ("reddit", reddit), ("wiki", wiki),
+                                 ("manifold", manifold), ("trends", trends),
+                                 ("metaculus", metaculus), ("api-sports", api_sports),
+                                 ("tavily", tavily), ("news", news), ("twitter", tweets)] if _ok(v)]
+        empty = [n for n, v in [("espn", espn), ("reddit", reddit), ("wiki", wiki),
+                                 ("manifold", manifold), ("trends", trends),
+                                 ("metaculus", metaculus), ("api-sports", api_sports),
+                                 ("tavily", tavily), ("news", news), ("twitter", tweets)]
+                 if not _ok(v) and n not in no_key]
+        parts = []
+        if fired:   parts.append(f"✓ {' '.join(fired)}")
+        if empty:   parts.append(f"✗ {' '.join(empty)}")
+        if no_key:  parts.append(f"🔑 {' '.join(no_key)}")
+        print(f"  [DataEnricher] Sources: {' | '.join(parts) or 'none'}", flush=True)
 
         # Whale signals are passed in from the trade cycle (fetched once, reused per market)
         from agents.connectors.whale_tracker import WhaleTracker
