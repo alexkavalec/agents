@@ -1028,6 +1028,10 @@ class DataEnricher:
         if not keywords:
             return ""
 
+        # Single primary term (first keyword) works better for broad lookups like
+        # Wikipedia and Reddit where multi-word queries narrow too aggressively.
+        primary_kw = keywords.split()[0]
+
         print(f"  [DataEnricher] Fetching live context for: {keywords!r}", flush=True)
 
         api_sports = self._get_api_sports(question)
@@ -1036,15 +1040,16 @@ class DataEnricher:
         manifold   = self._get_manifold(keywords)
         tavily     = self._get_tavily(question)
         espn       = self._get_espn(question)
-        news       = self._get_news(question)
+        news       = self._get_news(keywords)      # keywords is more precise than full question
         tweets     = self._get_tweets(keywords)
-        reddit     = self._get_reddit(keywords)
-        wiki       = self._get_wikipedia_pageviews(keywords)
+        reddit     = self._get_reddit(primary_kw)  # single term → broader, more relevant results
+        wiki       = self._get_wikipedia_pageviews(primary_kw)  # Wikipedia needs a single entity
         trends     = self._get_google_trends(keywords)
 
         # One-line source status so it's obvious what's working each cycle
         def _ok(v):
-            if isinstance(v, dict):  return bool(v.get("predictions") or v.get("odds") or v.get("scoreboard") or v.get("teams"))
+            if isinstance(v, list):  return bool(v)
+            if isinstance(v, dict):  return bool(v)   # any non-empty dict = data returned
             return bool(v)
         no_key = []
         if not self.api_sports_key: no_key.append("api-sports")
