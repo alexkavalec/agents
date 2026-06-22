@@ -488,7 +488,8 @@ class Trader:
                 except Exception as e:
                     err = str(e)
                     if "fully filled" in err or "FOK" in err.upper() or "killed" in err.lower():
-                        print(f"  ✗ FOK killed — insufficient liquidity. Will retry next cycle.")
+                        print(f"  ✗ FOK killed — insufficient liquidity. Suppressing market for 4h.", flush=True)
+                        self._record_skip(state, question)
                         log_trade(question, token_id, trade_side, prob, price, edge,
                                   trade_amount, "fok_killed")
                         _discord(
