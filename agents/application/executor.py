@@ -378,62 +378,6 @@ class Executor:
                 docs.append((doc, 1.0))
         return docs[:4]
 
-    def source_best_trade(self, market_object, whale_signals: list = None) -> str:
-        market_document = market_object[0].dict()
-        market = market_document["metadata"]
-        outcome_prices = self._safe_parse_list(market.get("outcome_prices"))
-        outcomes = self._safe_parse_list(market.get("outcomes"))
-        question = market.get("question", "")
-        if not question:
-            print("  Market metadata missing 'question' — skipping.")
-            return None
-        description = market_document["page_content"]
-
-        from agents.memory.trade_log import get_recent_lessons
-        from agents.connectors.data_enricher import DataEnricher
-        from agents.connectors.whale_tracker import WhaleTracker
-        lessons = get_recent_lessons(5)
-        live_context = DataEnricher().get_context(question, whale_signals=whale_signals)
-
-        # Append direct holder snapshot for this specific market (post-selection signal)
-        condition_id = market.get("condition_id", "")
-        if condition_id:
-            try:
-                holder_ctx = WhaleTracker().get_market_holders(condition_id)
-                if holder_ctx:
-                    live_context = (live_context or "") + holder_ctx
-            except Exception as _wt_err:
-                print(f"  [WhaleTracker] holders fetch failed (non-fatal): {_wt_err}")
-
-        prompt = self.prompter.superforecaster(question, description, outcomes,
-                                               lessons=lessons, live_context=live_context,
-                                               market_prices=outcome_prices)
-        result = self.llm.invoke(prompt)
-        superforecaster_content = result.content
-
-        print(f"  Superforecaster: {superforecaster_content[:120]}")
-        prompt = self.prompter.one_best_trade(superforecaster_content, outcomes, outcome_prices)
-        result = self.llm.invoke(prompt)
-        trade_content = result.content
-
-        print(f"  Trade signal:    {trade_content[:200].replace(chr(10), ' ').replace(chr(13), ' ')}")
-
-        # If the LLM omitted price:, inject it from the superforecaster estimate so
-        # the edge check in trade.py always has a probability to compare against.
-        if not re.search(r"price\s*[:=]", trade_content):
-            m = re.search(r"likelihood\s*`?([0-9]*\.?[0-9]+)", superforecaster_content)
-            if m:
-                trade_content = f"price:{m.group(1)}, {trade_content}"
-
-        return trade_content
-
-    def format_trade_prompt_for_execution(self, best_trade: str) -> float:
-        data = best_trade.split(",")
-        # price = re.findall("\d+\.\d+", data[0])[0]
-        size = re.findall("\d+\.\d+", data[1])[0]
-        usdc_balance = self.polymarket.get_usdc_balance()
-        return float(size) * usdc_balance
-
     def source_best_market_to_create(self, filtered_markets) -> str:
         prompt = self.prompter.create_new_market(filtered_markets)
         result = self.llm.invoke(prompt)

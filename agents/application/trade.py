@@ -1,5 +1,4 @@
 from agents.application.executor import Executor as Agent
-from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
 from agents.memory.trade_log import log_trade, log_lesson, get_recent_lessons
 import shutil
@@ -12,18 +11,29 @@ import requests as _requests
 
 # =========================================================================
 # GUARDRAILS CONFIG  -- tune these. All money limits are FRACTIONS of balance.
+#
+# Strategy: the bot trades ONLY on whale-leaderboard consensus (see WhaleTracker /
+# get_whale_signals). There is no AI market scan, RAG filter, or superforecaster
+# in the entry path anymore — a trade fires only when MIN_WHALES_AGREE (in
+# whale_tracker.py) independent top-leaderboard traders (today/weekly/monthly/
+# all-time) hold the same side of the same market.
 # =========================================================================
-MIN_EDGE = 0.05              # strong mispricing: full-size trade
-MIN_EDGE_CONVICTION = 0.03  # high-confidence trade even with smaller edge: half-size
 MAX_TRADE_FRACTION = 0.10   # never stake more than 10% of current balance on one trade
-CONVICTION_TRADE_FRACTION = 0.05  # half-size for conviction trades
+MIN_TRADE_FRACTION = 0.03   # floor size for a bare-minimum qualifying signal
 MAX_OPEN_POSITIONS = 25    # don't open a new position if this many are already open
 DAILY_SPEND_FRACTION = 0.30  # stop opening trades once 30% of starting daily balance spent
 DAILY_LOSS_FRACTION = 0.15   # stop for the day if balance drops 15% below the day's start
 ABSOLUTE_MIN_TRADE = 1.0   # Polymarket order minimum (~$1). Below this, skip.
 TRADE_COOLDOWN_MINUTES = 55  # minimum gap between trades — blocks back-to-back redeploy trades
-MAX_EDGE = 0.40              # reject trades where AI diverges > 40pp from market — likely hallucination
 STATE_FILE = "trader_daily_state.json"  # project root survives Railway restarts better than /tmp
+
+# Position sizing scales with signal strength: how many whales agree, and how much
+# combined profit/volume they represent. Both factors saturate at 1.0 and are
+# averaged; a fresh signal (a whale newly opened this cycle) gets a bonus on top,
+# capped at MAX_TRADE_FRACTION.
+WHALE_COUNT_SATURATION = 5          # whale_count at/above this maxes out the count factor
+WHALE_VOLUME_SATURATION = 2_000_000  # combined whale $ profit/volume that maxes out the volume factor
+FRESH_SIGNAL_BONUS = 1.25           # multiplier applied to fresh (newly-entered) signals
 
 _CORR_STOP = {
     "will", "the", "a", "an", "is", "are", "was", "were", "be", "been",
@@ -62,7 +72,6 @@ def _discord(msg: str) -> None:
 class Trader:
     def __init__(self):
         self.polymarket = Polymarket()
-        self.gamma = Gamma()
         self.agent = Agent()
 
     def _today(self) -> str:
@@ -121,65 +130,6 @@ class Trader:
             if len(overlap) >= 2:
                 return True, oq
         return False, None
-
-    def _parse_confidence(self, text: str) -> str:
-        """Extract HIGH / MEDIUM / LOW from superforecaster or trade output."""
-        try:
-            m = re.search(r"[Cc]onfidence\s*[:=]\s*(HIGH|MEDIUM|LOW)", text)
-            if m:
-                return m.group(1).upper()
-        except Exception:
-            pass
-        return "MEDIUM"
-
-    def _resolve_trade(self, market, prob, market_price):
-        """Return (token_id, side_label) for the correct side of the trade.
-
-        Uses the token IDs already stored in the selected market's Chroma metadata.
-        If bot estimate > market price: Yes is underpriced → buy YES (token index 0).
-        If bot estimate < market price: Yes is overpriced → buy NO (token index 1).
-        """
-        try:
-            meta = market[0].dict().get("metadata", {})
-            clob_ids = self.agent._safe_parse_list(meta.get("clob_token_ids"))
-            if not clob_ids:
-                return None, None
-            # index 0 = YES token, index 1 = NO token (Polymarket convention)
-            if prob > market_price:
-                token_id = str(clob_ids[0])
-                side = "YES"
-            else:
-                token_id = str(clob_ids[1]) if len(clob_ids) > 1 else str(clob_ids[0])
-                side = "NO"
-            if not token_id or token_id in ("0", ""):
-                return None, None
-            return token_id, side
-        except Exception as e:
-            print(f"_resolve_trade error: {e}")
-            return None, None
-
-    def _parse_prob_and_price(self, best_trade, market):
-        """prob = the bot's chosen price (its probability estimate, first number in
-        the trade string). price = the market's current 'Yes' price, read from
-        outcome_prices in metadata exactly like executor.source_best_trade does."""
-        prob = price = None
-        # bot's estimate: FIRST price-like number in the trade text
-        try:
-            text = str(best_trade)
-            m = re.search(r"price\s*[:=]\s*([0-9]*\.?[0-9]+)", text)
-            if m:
-                prob = float(m.group(1))
-        except Exception:
-            pass
-        # market price: from outcome_prices[0] in the market metadata
-        try:
-            meta = market[0].dict().get("metadata", {})
-            op = self.agent._safe_parse_list(meta.get("outcome_prices"))
-            if op:
-                price = float(op[0])  # 'Yes' price
-        except Exception:
-            pass
-        return prob, price
 
     def _count_open_positions(self) -> int:
         try:
@@ -255,8 +205,7 @@ class Trader:
                 print(f"  ✗ COOLDOWN — last trade {elapsed:.0f} min ago (need {TRADE_COOLDOWN_MINUTES}). Skipping.")
                 return
 
-            # ── WHALE SCAN ───────────────────────────────────────────────────
-            whale_signals = []
+            # ── WHALE SCAN — the sole source of trade signals ──────────────────
             try:
                 from agents.connectors.whale_tracker import WhaleTracker
                 whale_signals, whale_lb, whale_sig = WhaleTracker().get_whale_signals()
@@ -264,7 +213,7 @@ class Trader:
                 # Railway's log collector won't split and reorder them.
                 print(whale_lb, flush=True)
                 print(whale_sig, flush=True)
-                # Discord alert for fresh signals
+                # Discord alert for fresh signals (informational — independent of what we trade)
                 fresh = [s for s in whale_signals if s.get("is_fresh")]
                 if fresh:
                     alert_lines = ["**FRESH WHALE SIGNALS** — new positions opened this cycle:"]
@@ -276,67 +225,20 @@ class Trader:
                         )
                     _discord("\n".join(alert_lines))
             except Exception as e:
-                print(f"  WhaleTracker error (non-fatal): {e}")
-
-            events = self.polymarket.get_all_tradeable_events()
-            if not events:
-                print("  ✗ No events found. Skipping.")
+                print(f"  ✗ WhaleTracker error — no signal source available. Skipping. ({e})")
                 return
-            print(f"  Scan: {len(events)} events", end="", flush=True)
 
-            filtered_events = self.agent.filter_events_with_rag(events)
-            print(f" → {len(filtered_events)} after RAG filter", end="", flush=True)
-
-            markets = self.agent.map_filtered_events_to_markets(filtered_events)
-            if not markets:
-                print(f" → 0 markets. Skipping.", flush=True)
+            if not whale_signals:
+                print("  ✗ No whale consensus signals this cycle. Skipping.")
                 return
-            print(f" → {len(markets)} markets", flush=True)
 
-            # ── WHALE BOOST: promote whale-signalled markets to the top of the list ──
-            # Fresh signals (new whale entries this cycle) score 2; ongoing score 1.
-            if whale_signals:
-                whale_index = {
-                    s["title"].lower(): (2 if s.get("is_fresh") else 1)
-                    for s in whale_signals
-                }
-
-                def _whale_score(m: dict) -> int:
-                    q = (m.get("question") or "").lower()
-                    q_words = set(w for w in q.split() if len(w) > 3)
-                    best = 0
-                    for wt, score in whale_index.items():
-                        wt_words = set(w for w in wt.split() if len(w) > 3)
-                        if len(q_words & wt_words) >= 2:
-                            best = max(best, score)
-                    return best
-
-                markets = sorted(markets, key=_whale_score, reverse=True)
-                fresh_b   = sum(1 for m in markets if _whale_score(m) == 2)
-                ongoing_b = sum(1 for m in markets if _whale_score(m) == 1)
-                if fresh_b or ongoing_b:
-                    print(f"  Whale boost: {fresh_b} fresh [NEW] + {ongoing_b} ongoing moved to top")
-
-            # Pre-filter: skip markets evaluated but not traded in the last 4h.
-            # Prevents the same market dominating every cycle when edge is marginal.
+            # Pre-filter: skip signals evaluated but not traded in the last 4h.
             now_ts = time.time()
             recently_skipped = {k: v for k, v in state.get("recently_skipped", {}).items()
                                  if now_ts - v < 4 * 3600}
             state["recently_skipped"] = recently_skipped
-            if recently_skipped:
-                pre_n = len(markets)
-                markets = [
-                    m for m in markets
-                    if m.get("question", "")[:80] not in recently_skipped
-                ]
-                removed = pre_n - len(markets)
-                if removed:
-                    print(f"  Pre-filter: {removed} recently-evaluated market(s) suppressed for 4h")
-                if not markets:
-                    print("  ✗ All markets recently evaluated. Skipping.")
-                    return
 
-            # Collect open position titles for correlation filtering (soft + hard)
+            # Collect open position titles/tokens for correlation + dedup filtering
             open_pos_questions = []
             try:
                 positions_data = self.polymarket.get_open_positions()
@@ -348,90 +250,63 @@ class Trader:
             except Exception as e:
                 print(f"  Could not fetch open positions for correlation check: {e}")
 
-            # Pre-filter: remove correlated markets BEFORE the AI sees them.
-            # Without this, the AI tends to select markets it finds most interesting,
-            # which are often the same topics as existing positions → all blocked post-AI.
-            if open_pos_questions:
-                pre_n = len(markets)
-                markets = [
-                    m for m in markets
-                    if not self._is_correlated_with_open(m.get("question", ""), open_pos_questions)[0]
-                ]
-                removed = pre_n - len(markets)
-                if removed:
-                    print(f"  Pre-filter: {removed} correlated market(s) removed ({len(markets)} remain)")
-                if not markets:
-                    print("  ✗ All markets correlated with open positions. Skipping.")
-                    return
+            held_tokens = set()
+            try:
+                held_tokens = self.polymarket.get_held_token_ids()
+            except Exception as e:
+                print(f"  Could not fetch held token IDs for dedup check: {e}")
+            traded_tokens_today = set(state.get("traded_tokens", []))
 
-            filtered_markets = self.agent.filter_markets(markets, open_positions=open_pos_questions)
-            print(f"  → {len(filtered_markets)} candidate(s) after AI market selection", flush=True)
-            if not filtered_markets:
-                print("  ✗ No markets passed AI filter. Skipping.")
-                return
-
-            market = None
-            question = ""
-            for candidate in filtered_markets:
-                q = candidate[0].metadata.get("question", "")
-                if not q:
+            # Signals arrive pre-sorted: fresh first, then whale_count, then whale_volume.
+            # Walk them in order and take the first one that clears all guardrails.
+            candidate = None
+            for s in whale_signals:
+                title = s["title"]
+                token_id = s["asset"]
+                if title[:80] in recently_skipped:
                     continue
-                correlated, matching = self._is_correlated_with_open(q, open_pos_questions)
+                if token_id and (token_id in held_tokens or token_id in traded_tokens_today):
+                    continue
+                correlated, matching = self._is_correlated_with_open(title, open_pos_questions)
                 if correlated:
-                    print(f"  Correlation skip: '{q[:55]}' overlaps with '{matching[:40]}'")
+                    print(f"  Correlation skip: '{title[:55]}' overlaps with '{matching[:40]}'")
                     continue
-                market = candidate
-                question = q
+                candidate = s
                 break
-            if market is None:
-                print("  ✗ All candidates correlated with open positions. Skipping.")
+
+            if candidate is None:
+                print("  ✗ No eligible whale signal — all correlated, held, or recently skipped. Skipping.")
                 return
+
+            question    = candidate["title"]
+            token_id    = candidate["asset"]
+            trade_side  = candidate["side"]
+            whale_count = candidate["whale_count"]
+            whale_vol   = candidate["whale_volume_total"]
+            is_fresh    = candidate["is_fresh"]
+            drift       = candidate["price_drift"]
+
             print(f"")
             print(f"  Selected: \"{question[:80]}\"")
+            print(f"  Signal: {whale_count} whale(s) {'[FRESH]' if is_fresh else '[ongoing]'}  "
+                  f"{trade_side.upper()}  entry {candidate['avg_entry']:.3f} -> now {candidate['cur_price']:.3f}  "
+                  f"({drift:.0%} drift)  combined ${whale_vol:,}")
 
-            best_trade = self.agent.source_best_trade(market, whale_signals=whale_signals)
-            if best_trade is None:
-                print("  ✗ Could not generate trade signal. Skipping.")
-                return
+            # Sizing scales with signal strength: how many whales agree (count_factor)
+            # and how much combined profit/volume they represent (volume_factor), each
+            # saturating at 1.0. A fresh signal gets a bonus, capped at MAX_TRADE_FRACTION.
+            count_factor  = min(whale_count / WHALE_COUNT_SATURATION, 1.0)
+            volume_factor = min(whale_vol / WHALE_VOLUME_SATURATION, 1.0)
+            size_fraction = MIN_TRADE_FRACTION + (MAX_TRADE_FRACTION - MIN_TRADE_FRACTION) * (
+                (count_factor + volume_factor) / 2
+            )
+            if is_fresh:
+                size_fraction *= FRESH_SIGNAL_BONUS
+            size_fraction = min(size_fraction, MAX_TRADE_FRACTION)
 
-            prob, price = self._parse_prob_and_price(best_trade, market)
-            if prob is None or price is None:
-                print("  ✗ Could not determine market price. Skipping.")
-                return
-
-            edge = abs(prob - price)
-            confidence = self._parse_confidence(best_trade)
-            print(f"  Forecast: {prob:.3f}  Market: {price:.3f}  Edge: {edge:+.3f}  [{confidence}]")
-
-            # Hard cap: an edge > 40pp almost always means the AI hallucinated a probability
-            # that the live Polymarket crowd would never price. Reject immediately.
-            if edge > MAX_EDGE:
-                print(f"  ✗ Edge {edge:.3f} exceeds {MAX_EDGE} cap — likely AI hallucination. Skipping.", flush=True)
-                return
-
-            # Two-tier system:
-            #   Tier 1 — strong mispricing  (edge >= 5%): full-size trade
-            #   Tier 2 — conviction trade   (edge >= 3% + HIGH confidence): half-size trade
-            conviction_trade = False
-            if edge >= MIN_EDGE:
-                print(f"  → STRONG EDGE ({edge:.3f} ≥ {MIN_EDGE}) — full-size trade")
-            elif edge >= MIN_EDGE_CONVICTION and confidence == "HIGH":
-                conviction_trade = True
-                print(f"  → CONVICTION ({edge:.3f} ≥ {MIN_EDGE_CONVICTION}, HIGH confidence) — half-size trade")
-            else:
-                reason = (f"edge {edge:.3f} < {MIN_EDGE_CONVICTION}" if edge < MIN_EDGE_CONVICTION
-                          else f"edge {edge:.3f} < {MIN_EDGE} and confidence {confidence} ≠ HIGH")
-                print(f"  ✗ No trade: {reason}. Skipping.", flush=True)
-                self._record_skip(state, question)
-                return
-
-            amount = self.agent.format_trade_prompt_for_execution(best_trade)
-
-            full_max    = balance * MAX_TRADE_FRACTION
-            conv_max    = balance * CONVICTION_TRADE_FRACTION
-            size_cap    = conv_max if conviction_trade else full_max
+            size_cap = balance * size_fraction
             remaining_daily = max(spend_cap - spent_today, 0)
-            trade_amount = min(float(amount) if amount else size_cap, size_cap, remaining_daily)
+            trade_amount = min(size_cap, remaining_daily)
 
             if trade_amount < ABSOLUTE_MIN_TRADE:
                 # Bump to minimum if the wallet and daily budget both allow a $1 order
@@ -442,22 +317,7 @@ class Trader:
                     print(f"  ✗ Trade size ${trade_amount:.2f} below ${ABSOLUTE_MIN_TRADE} minimum — balance too low. Skipping.", flush=True)
                     self._record_skip(state, question)
                     return
-            print(f"  Size: ${trade_amount:.2f}  (cap ${size_cap:.2f}, daily room ${remaining_daily:.2f})")
-
-            token_id, trade_side = self._resolve_trade(market, prob, price)
-
-            # Dedup: check live positions first (survives redeploys), state file as fallback
-            try:
-                held = self.polymarket.get_held_token_ids()
-                if token_id and token_id in held:
-                    print(f"  ✗ Dedup: already holding token {token_id[:20]}... Skipping.")
-                    return
-            except Exception as e:
-                print(f"  Dedup check failed: {e}")
-            traded_tokens = state.get("traded_tokens", [])
-            if token_id and token_id in traded_tokens:
-                print(f"  ✗ Dedup: token {token_id[:20]}... already traded today. Skipping.")
-                return
+            print(f"  Size: ${trade_amount:.2f}  (fraction {size_fraction:.1%}, cap ${size_cap:.2f}, daily room ${remaining_daily:.2f})")
 
             resp = None
             order_filled = False
@@ -479,20 +339,21 @@ class Trader:
                     order_id = resp.get("orderID", resp.get("id", "")) if isinstance(resp, dict) else ""
                     print(f"  ✓ FILLED  order {str(order_id)[:16] or '(no id)'}")
                     order_filled = True
-                    log_trade(question, token_id, trade_side, prob, price, edge,
-                              trade_amount, "filled")
+                    log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
+                              drift, trade_amount, "filled")
                     _discord(
                         f"✅ **TRADE FILLED** — {trade_side} ${trade_amount:.2f}\n"
                         f"> {question[:120]}\n"
-                        f"> Forecast {prob:.3f} vs market {price:.3f}  edge {edge:+.3f}  [{confidence}]"
+                        f"> {whale_count} whale(s) {'[FRESH]' if is_fresh else ''} — "
+                        f"entry {candidate['avg_entry']:.3f} vs now {candidate['cur_price']:.3f} ({drift:.0%} drift)"
                     )
                 except Exception as e:
                     err = str(e)
                     if "fully filled" in err or "FOK" in err.upper() or "killed" in err.lower():
                         print(f"  ✗ FOK killed — insufficient liquidity. Suppressing market for 4h.", flush=True)
                         self._record_skip(state, question)
-                        log_trade(question, token_id, trade_side, prob, price, edge,
-                                  trade_amount, "fok_killed")
+                        log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
+                                  drift, trade_amount, "fok_killed")
                         _discord(
                             f"⚡ **FOK KILLED** — no liquidity for {trade_side} ${trade_amount:.2f}\n"
                             f"> {question[:120]}"
@@ -500,10 +361,10 @@ class Trader:
                     else:
                         print(f"  ✗ Order error: {e}")
                         import traceback; traceback.print_exc()
-                        log_trade(question, token_id, trade_side, prob, price, edge,
-                                  trade_amount, "error")
+                        log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
+                                  drift, trade_amount, "error")
             else:
-                print("  ✗ Could not resolve token ID for market — skipping.")
+                print("  ✗ Signal had no token ID — skipping.")
 
             success = order_filled
             if order_filled and isinstance(resp, dict):
