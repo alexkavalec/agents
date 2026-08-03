@@ -215,6 +215,66 @@ class WhaleTracker:
             and not p.get("redeemable", False)
         ]
 
+    def get_trader_pnl_history(self, address: str, window: str = "1W") -> list:
+        """
+        Scrape a trader's own P&L-over-time chart data from their Polymarket profile
+        page (polymarket.com/profile/{address}) — same escaped-JSON dehydrated-state
+        format as the leaderboard page (see _scrape_leaderboard_page), just under a
+        different queryKey ("portfolio-pnl"). window: '1D' | '1W' | '1M' | 'ALL'.
+
+        Note: Polymarket does not expose a win/loss/push record for other traders
+        anywhere (confirmed by inspecting every query embedded on the profile page) —
+        this is the closest real substitute: their actual $ P&L over time.
+
+        Returns [{"date": ISO8601, "cumulative_pnl": float}, ...], oldest first — same
+        shape as scoreboard.get_pnl_timeseries() so the dashboard can chart either with
+        the same renderer. Called on-demand per dashboard request (when a trader's modal
+        is opened), not during the bot's own scan cycle — a full profile-page fetch per
+        tracked whale every 15 minutes would be a lot of unnecessary bandwidth for data
+        nobody's looking at yet.
+        """
+        if window not in ("1D", "1W", "1M", "ALL"):
+            window = "1W"
+        try:
+            r = requests.get(f"{PM_WEB}/profile/{address}", headers=PM_HEADERS, timeout=15)
+            if r.status_code != 200:
+                return []
+            text = r.text
+            key_marker = rf'\"queryKey\":[\"portfolio-pnl\",\"{address}\",\"{window}\"'
+            key_idx = text.find(key_marker)
+            if key_idx == -1:
+                return []
+            data_marker = r'\"data\":'
+            data_idx = text.rfind(data_marker, 0, key_idx)
+            if data_idx == -1:
+                return []
+            i = data_idx + len(data_marker)
+            while text[i] in " \\":
+                i += 1
+            opener = text[i]
+            closer = "}" if opener == "{" else "]"
+            depth, j = 0, i
+            while j < len(text):
+                if text[j] == opener:
+                    depth += 1
+                elif text[j] == closer:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            raw = text[i:j + 1].replace(r'\"', '"')
+            points = json.loads(raw)
+        except Exception:
+            return []
+
+        return [
+            {
+                "date": datetime.fromtimestamp(p["t"], tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "cumulative_pnl": round(p["p"], 2),
+            }
+            for p in points if "t" in p and "p" in p
+        ]
+
     def get_whale_signals(self, top_n: int = 10) -> tuple:
         """
         Fetch top 10 traders from today, weekly, and all-time leaderboard windows,
