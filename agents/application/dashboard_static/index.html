@@ -71,9 +71,8 @@
   #trades-table td:nth-child(2) { white-space: normal; min-width: 180px; }
   #trades-table th:nth-child(4), #trades-table td:nth-child(4),
   #trades-table th:nth-child(7), #trades-table td:nth-child(7) { text-align: right; font-variant-numeric: tabular-nums; }
-  #whale-positions-table td:nth-child(4) { white-space: normal; min-width: 180px; }
-  #whale-positions-table th:nth-child(2), #whale-positions-table td:nth-child(2),
-  #whale-positions-table th:nth-child(6), #whale-positions-table td:nth-child(6) { text-align: right; font-variant-numeric: tabular-nums; }
+  #modal-positions-table td:nth-child(1) { white-space: normal; min-width: 160px; }
+  #modal-positions-table th:nth-child(n+3), #modal-positions-table td:nth-child(n+3) { text-align: right; font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: none; }
   tbody tr { transition: background-color 120ms ease; }
   tbody tr:hover { background: rgba(255,255,255,0.025); }
@@ -84,24 +83,49 @@
   .outcome-win { color: var(--green); font-weight: 600; }
   .outcome-loss { color: var(--red); font-weight: 600; }
   .outcome-pending { color: var(--muted); }
-  .pnl-pos { color: var(--green); }
-  .pnl-neg { color: var(--red); }
   .empty {
     color: var(--muted); font-size: 13px; padding: 22px 12px; text-align: center;
     border: 1px dashed var(--border); border-radius: 8px;
   }
   .scroll { overflow-x: auto; }
-  .scroll-y { max-height: 380px; overflow-y: auto; }
 
   .lb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }
   .lb-col h3 {
     font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em;
     color: var(--muted); margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
   }
-  .lb-row { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 0; font-size: 13px; }
+  .lb-row {
+    display: flex; justify-content: space-between; align-items: baseline; padding: 6px 4px; font-size: 13px;
+    width: 100%; background: transparent; border: none; color: inherit; font: inherit; text-align: left;
+    cursor: pointer; border-radius: 6px; transition: background-color 120ms ease;
+  }
+  .lb-row:hover, .lb-row:focus-visible { background: rgba(255,255,255,0.05); }
+  .lb-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
   .lb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 8px; }
   .lb-rank { color: var(--muted); width: 16px; display: inline-block; font-variant-numeric: tabular-nums; }
   .lb-profit { font-variant-numeric: tabular-nums; color: var(--green); flex-shrink: 0; }
+
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center; z-index: 50; padding: 20px;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    max-width: 640px; width: 100%; max-height: 82vh; overflow-y: auto; padding: 22px 24px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .modal-title { font-size: 16px; font-weight: 650; }
+  .modal-sub { margin-top: 6px; }
+  .modal-close {
+    background: transparent; border: none; color: var(--muted); font-size: 20px; line-height: 1;
+    cursor: pointer; padding: 4px 8px; border-radius: 6px; flex-shrink: 0;
+  }
+  .modal-close:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+  .modal-stats { display: flex; gap: 24px; flex-wrap: wrap; margin: 16px 0 18px; }
+  .modal-stat .label { color: var(--muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  .modal-stat .value { font-size: 17px; font-weight: 650; margin-top: 3px; font-variant-numeric: tabular-nums; }
 
   .window-badge {
     display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
@@ -181,21 +205,29 @@
     <div class="empty" id="leaderboards-empty" style="display:none;">No leaderboard data yet — fills in after the bot's next cycle.</div>
   </section>
 
-  <section>
-    <div class="section-head">
-      <h2>Whale Open Positions</h2>
-      <span class="as-of" id="whale-positions-updated"></span>
+  <div class="subtitle" style="margin: -6px 0 32px;">Click a trader in the leaderboards above to see their open positions.</div>
+</div>
+
+<div class="modal-backdrop" id="trader-modal">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title" id="modal-title"></div>
+        <div class="modal-sub" id="modal-sub"></div>
+      </div>
+      <button class="modal-close" id="modal-close" type="button" aria-label="Close">&times;</button>
     </div>
-    <div class="panel scroll scroll-y">
-      <table id="whale-positions-table">
+    <div class="modal-stats" id="modal-stats"></div>
+    <div class="scroll">
+      <table id="modal-positions-table">
         <thead>
-          <tr><th>Trader</th><th>Weekly P&amp;L</th><th>Lists</th><th>Market</th><th>Side</th><th>Value</th></tr>
+          <tr><th>Market</th><th>Side</th><th>Avg</th><th>Now</th><th>Size</th><th>Value</th></tr>
         </thead>
-        <tbody></tbody>
+        <tbody id="modal-positions-body"></tbody>
       </table>
-      <div class="empty" id="whale-positions-empty" style="display:none;">No whale position data yet.</div>
     </div>
-  </section>
+    <div class="empty" id="modal-positions-empty" style="display:none;">No open positions found for this trader.</div>
+  </div>
 </div>
 
 <script>
@@ -387,39 +419,64 @@ function renderLeaderboards(leaderboards) {
 
   wrap.innerHTML = cols.map(c => {
     const rows = (leaderboards[c.key] || []).map((t, i) => `
-      <div class="lb-row">
+      <button type="button" class="lb-row" data-address="${escapeHtml(t.address || "")}">
         <span class="lb-name"><span class="lb-rank">${i + 1}</span>${escapeHtml(displayName(t))}</span>
         <span class="lb-profit">${fmtCompactUsd(t.profit)}</span>
-      </div>
+      </button>
     `).join("");
     return `<div class="lb-col"><h3>${escapeHtml(c.label)}</h3>${rows || '<div class="empty">No data</div>'}</div>`;
   }).join("");
 }
 
-// ---- Whale open positions (per trader) ----
-function renderWhalePositions(traders) {
-  const body = document.querySelector("#whale-positions-table tbody");
-  const emptyEl = document.getElementById("whale-positions-empty");
-  const rows = [];
-  (traders || []).forEach(t => {
-    (t.positions || []).forEach(p => {
-      rows.push({ trader: displayName(t), weeklyPnl: t.weekly_pnl, windowList: t.windows || [], ...p });
-    });
-  });
-  rows.sort((a, b) => (b.value || 0) - (a.value || 0));
+// ---- Trader detail modal (opened by clicking a leaderboard row) ----
+function openTraderModal(address) {
+  if (!address) return;
+  const traders = (lastData && lastData.whale_traders) || [];
+  const t = traders.find(x => x.address === address) || { address, name: "", windows: [], weekly_pnl: null, positions: [] };
+  const positions = t.positions || [];
+  const totalValue = positions.reduce((sum, p) => sum + (p.value || 0), 0);
 
-  emptyEl.style.display = rows.length ? "none" : "block";
-  body.innerHTML = rows.map(r => `
-    <tr>
-      <td>${escapeHtml(r.trader)}</td>
-      <td class="${r.weeklyPnl === null || r.weeklyPnl === undefined ? "" : (r.weeklyPnl >= 0 ? "pnl-pos" : "pnl-neg")}">${fmtUsd(r.weeklyPnl)}</td>
-      <td>${windowBadges(r.windowList)}</td>
-      <td>${escapeHtml(r.title || "")}</td>
-      <td class="${sideClass(r.side)}">${escapeHtml(r.side || "")}</td>
-      <td>${fmtUsd(r.value)}</td>
-    </tr>
-  `).join("");
+  document.getElementById("modal-title").textContent = displayName(t);
+  document.getElementById("modal-sub").innerHTML = windowBadges(t.windows);
+  document.getElementById("modal-stats").innerHTML = `
+    <div class="modal-stat">
+      <div class="label">Weekly P&amp;L</div>
+      <div class="value ${t.weekly_pnl === null || t.weekly_pnl === undefined ? "" : (t.weekly_pnl >= 0 ? "pos" : "neg")}">${fmtUsd(t.weekly_pnl)}</div>
+    </div>
+    <div class="modal-stat"><div class="label">Open Positions</div><div class="value">${positions.length}</div></div>
+    <div class="modal-stat"><div class="label">Total Value</div><div class="value">${fmtUsd(totalValue)}</div></div>
+  `;
+
+  document.getElementById("modal-positions-empty").style.display = positions.length ? "none" : "block";
+  document.getElementById("modal-positions-body").innerHTML = [...positions]
+    .sort((a, b) => (b.value || 0) - (a.value || 0))
+    .map(p => `
+      <tr>
+        <td>${escapeHtml(p.title || "")}</td>
+        <td class="${sideClass(p.side)}">${escapeHtml(p.side || "")}</td>
+        <td>${fmtPrice(p.avg_price)}</td>
+        <td>${fmtPrice(p.cur_price)}</td>
+        <td>${p.size ?? "—"}</td>
+        <td>${fmtUsd(p.value)}</td>
+      </tr>
+    `).join("");
+
+  document.getElementById("trader-modal").classList.add("open");
 }
+function closeTraderModal() {
+  document.getElementById("trader-modal").classList.remove("open");
+}
+document.getElementById("leaderboards").addEventListener("click", e => {
+  const row = e.target.closest(".lb-row");
+  if (row) openTraderModal(row.dataset.address);
+});
+document.getElementById("modal-close").addEventListener("click", closeTraderModal);
+document.getElementById("trader-modal").addEventListener("click", e => {
+  if (e.target.id === "trader-modal") closeTraderModal();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeTraderModal();
+});
 
 function render(data) {
   lastData = data;
@@ -473,9 +530,7 @@ function render(data) {
 
   const whaleUpdated = data.whale_last_updated ? fmtTime(data.whale_last_updated) : "no scan yet";
   document.getElementById("whale-updated").textContent = "leaderboard as of " + whaleUpdated;
-  document.getElementById("whale-positions-updated").textContent = "as of " + whaleUpdated;
   renderLeaderboards(data.whale_leaderboards || {});
-  renderWhalePositions(data.whale_traders || []);
 }
 
 async function refresh() {

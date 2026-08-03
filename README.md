@@ -72,10 +72,10 @@ anyone with the URL, so set one before exposing it. Data also available as JSON 
 Shows:
 - Balance, open positions, win/loss record, ROI%, and a P&L chart (all live/updated
   every poll)
-- The 4 whale leaderboards (today/weekly/monthly/all-time) and every open position
-  each tracked whale currently holds — this part only refreshes as often as the bot's
-  own 15-minute cycle runs (it reads a cache the bot writes; the dashboard polling
-  faster than that doesn't trigger extra scraping)
+- The 4 whale leaderboards (today/weekly/monthly/all-time) — click any trader to open a
+  detail modal with their weekly P&L and every open position they currently hold. This
+  part only refreshes as often as the bot's own 15-minute cycle runs (it reads a cache
+  the bot writes; the dashboard polling faster than that doesn't trigger extra scraping)
 
 ## Deployment
 
