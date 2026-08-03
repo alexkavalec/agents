@@ -373,6 +373,10 @@ class WhaleTracker:
                 "new_whale_count":     new_whale_count,
                 "is_fresh":            new_whale_count > 0,
                 "first_seen":          earliest_seen,
+                # Was any whale in this bucket first observed today (UTC)? Distinct from
+                # is_fresh (true only the exact cycle a whale is first noticed) — this stays
+                # true all day, which is what "trade today's positions" actually means.
+                "is_today":            earliest_seen[:10] == now[:10],
             })
 
         _save_whale_state({"last_updated": now, "whale_positions": new_state_pos})

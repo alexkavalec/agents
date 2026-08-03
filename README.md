@@ -2,7 +2,7 @@
 
 An autonomous trading bot for [Polymarket](https://polymarket.com) that trades **strictly off
 the public leaderboard** — no AI, no market scanning, no news/RAG enrichment, and no risk
-management beyond 5 explicit rules. It watches the top 10 traders on the today / weekly /
+management beyond 6 explicit rules. It watches the top 10 traders on the today / weekly /
 monthly / all-time leaderboards and copies their consensus moves.
 
 See [`CLAUDE.md`](./CLAUDE.md) for the full architecture and change history.
@@ -14,8 +14,9 @@ Every 15 minutes, `Trader.one_best_trade()`:
 1. Fetches the top 10 traders on the today/weekly/monthly/all-time profit leaderboards and
    every open position each one currently holds
 2. Builds a consensus signal wherever 2+ independent whales hold the same side of the same
-   market — no other filtering
-3. Bets a flat 25% of current balance, buying the exact token the whales hold, via a FOK
+   market
+3. Keeps only signals first observed today, unless 5+ whales agree (see rule 6 below)
+4. Bets a flat 25% of current balance, buying the exact token the whales hold, via a FOK
    market order
 
 ## The only rules it follows
@@ -26,9 +27,11 @@ Every 15 minutes, `Trader.one_best_trade()`:
 3. No daily loss limit, no daily spend cap
 4. Never bet the exact same (market, side) twice
 5. Never bet the opposite outcome of a market it already has a position in
+6. Only trade signals first observed today (UTC), unless 5+ independent whales agree on the
+   same (market, side) — then it's eligible regardless of timing
 
 That's it. There's no cooldown, no max open positions, no correlation filter, no signal-quality
-filtering beyond "did 2+ whales agree."
+filtering beyond rule 6 above.
 
 ## Setup
 
