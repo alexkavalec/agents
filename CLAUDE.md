@@ -207,6 +207,18 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   → skipped; future-dated event + 5-whale consensus → eligible via override; today-dated event +
   low consensus → eligible on its own, default path unaffected) — same shape of test as Task #27,
   updated for the corrected field names and semantics.
+- [x] **Task #29** — Dashboard Open Positions readability: (1) `fmtPrice()` in `index.html` now
+  renders prices as cents (`55c`, or `55.5c` when there's sub-cent precision) instead of a bare
+  decimal (`0.550`) — applies everywhere price is shown, including the whale trader modal's
+  positions table, for consistency; (2) the Open Positions "Size" column (raw share count, which
+  the user said they don't care about) is replaced with "Traded" — the actual dollar amount put
+  into the position, sourced from Polymarket's `initialValue` field on `/positions` (added to
+  `dashboard.py`'s `_build_stats()` as `amount_traded`) rather than `size * avg_price`, since
+  `initialValue` is what Polymarket itself reports as the cost basis. Scoped to the bot's own
+  Open Positions table only — the Whale Open Positions modal's "Size" column still shows share
+  count, since that's about the scale of a whale's bet, not "how much did I trade." Verified with
+  a mocked-data server + headless Chromium: confirmed `0.55` renders as `55c`, `0.555` as `55.5c`,
+  and the Traded column shows the dollar amount (`$275.00`) instead of a raw share count.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---

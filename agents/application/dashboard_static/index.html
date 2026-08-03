@@ -175,7 +175,7 @@
     <div class="panel scroll">
       <table id="positions-table">
         <thead>
-          <tr><th>Market</th><th>Side</th><th>Size</th><th>Avg</th><th>Now</th><th>Value</th></tr>
+          <tr><th>Market</th><th>Side</th><th>Traded</th><th>Avg</th><th>Now</th><th>Value</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -251,7 +251,8 @@ function fmtCompactUsd(n) {
 }
 function fmtPrice(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
-  return Number(n).toFixed(3);
+  const cents = Math.round(Number(n) * 1000) / 10; // 1 decimal place of cent precision
+  return (Number.isInteger(cents) ? cents.toFixed(0) : cents.toFixed(1)) + "c";
 }
 function fmtTime(iso) {
   if (!iso) return "—";
@@ -506,7 +507,7 @@ function render(data) {
     <tr>
       <td>${escapeHtml(p.title || "")}</td>
       <td class="${sideClass(p.outcome)}">${escapeHtml(p.outcome || "")}</td>
-      <td>${p.size ?? "—"}</td>
+      <td>${fmtUsd(p.amount_traded)}</td>
       <td>${fmtPrice(p.avg_price)}</td>
       <td>${fmtPrice(p.cur_price)}</td>
       <td>${fmtUsd(p.current_value)}</td>
