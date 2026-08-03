@@ -83,6 +83,9 @@
   .outcome-win { color: var(--green); font-weight: 600; }
   .outcome-loss { color: var(--red); font-weight: 600; }
   .outcome-pending { color: var(--muted); }
+  .val-pos { color: var(--green); }
+  .val-neg { color: var(--red); }
+  .val-even { color: var(--muted); }
   .empty {
     color: var(--muted); font-size: 13px; padding: 22px 12px; text-align: center;
     border: 1px dashed var(--border); border-radius: 8px;
@@ -175,7 +178,7 @@
     <div class="panel scroll">
       <table id="positions-table">
         <thead>
-          <tr><th>Market</th><th>Side</th><th>Traded</th><th>Avg</th><th>Now</th><th>Value</th></tr>
+          <tr><th>Market</th><th>Side</th><th>Traded</th><th>To Win</th><th>Avg</th><th>Now</th><th>Value</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -279,6 +282,13 @@ function displayName(row) {
 function sideClass(side) {
   const s = (side || "").toLowerCase();
   return s === "yes" ? "side-yes" : s === "no" ? "side-no" : "";
+}
+function pnlClass(current, cost) {
+  if (current === null || current === undefined || cost === null || cost === undefined) return "";
+  const diff = current - cost;
+  if (diff > 0.01) return "val-pos";
+  if (diff < -0.01) return "val-neg";
+  return "val-even";
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -508,9 +518,10 @@ function render(data) {
       <td>${escapeHtml(p.title || "")}</td>
       <td class="${sideClass(p.outcome)}">${escapeHtml(p.outcome || "")}</td>
       <td>${fmtUsd(p.amount_traded)}</td>
+      <td>${fmtUsd(p.to_win)}</td>
       <td>${fmtPrice(p.avg_price)}</td>
       <td>${fmtPrice(p.cur_price)}</td>
-      <td>${fmtUsd(p.current_value)}</td>
+      <td class="${pnlClass(p.current_value, p.amount_traded)}">${fmtUsd(p.current_value)}</td>
     </tr>
   `).join("");
 

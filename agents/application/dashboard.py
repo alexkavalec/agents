@@ -69,6 +69,11 @@ def _build_stats() -> dict:
                 "cur_price": p.get("curPrice"),
                 "amount_traded": p.get("initialValue"),
                 "current_value": p.get("currentValue"),
+                # Net profit if this position resolves in our favor: each share pays out
+                # $1, so payout is size * $1 — minus what we put in (initialValue).
+                "to_win": (float(p["size"]) - float(p["initialValue"]))
+                          if p.get("size") is not None and p.get("initialValue") is not None
+                          else None,
             }
             for p in positions
         ],
