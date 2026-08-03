@@ -16,8 +16,9 @@
 - `agents/polymarket/polymarket.py` — CLOB client wrapper: auth, balance, positions, orders
 - `agents/memory/trade_log.py` / `agents/memory/scoreboard.py` — trade history + win/loss tracking
 - `agents/application/dashboard.py` + `agents/application/dashboard_static/index.html` — read-only
-  stats web dashboard (balance, open positions, trade history, P&L chart, whale leaderboards +
-  positions), started by `run_loop` in a background thread. Stdlib `http.server` only, no new
+  stats web dashboard (balance, open positions, trade history, P&L chart, whale leaderboards —
+  click a trader to see their open positions in a modal), started by `run_loop` in a background
+  thread. Stdlib `http.server` only, no new
   dependencies. Polls every 60s client-side; balance/positions/trades are live per request, whale
   leaderboard/position data comes from `whale_scan_cache.json` (written once per 15-min bot cycle,
   not re-scraped per dashboard request). Optional `DASHBOARD_TOKEN` gates it via `?key=` query
@@ -138,6 +139,29 @@ disconnected. Do not resurrect either plan without an explicit new decision from
 - [x] **Task #23** — Fixed a real gap the logs surfaced: when the top signal of a cycle couldn't actually execute (FOK killed, or Polymarket rejects the order because price has drifted outside its tradeable `[0.01, 0.99]` range — happened live: a signal at `cur_price` 0.792 had moved to an actual orderbook price of 0.995 by execution time, likely a fast-moving sports market near resolution), the bot gave up for the entire 15-minute cycle even when other eligible consensus signals existed. `one_best_trade()` now builds the full eligible-signal list up front and tries each **in order** until one fills, instead of stopping after the first attempt. New `"untradeable"` trade-log status (distinct from `fok_killed`) for the price-out-of-range case; `get_stats()` and the cycle-summary log line surface its count. Verified with a scripted scenario matching the exact production log (first signal rejected with `invalid price`, second one fills) — confirms exactly 2 order attempts, the correct statuses land in `trade_history.json`, only the successful trade is written to the dedup journal, and both attempts size off the same starting balance.
 - [x] **Task #24** — Dashboard formatting pass. Fixed a real bug: market-question columns weren't the first column in the Recent Trades / Whale Positions tables, so the old CSS (`td:first-child { white-space: normal }`) never applied to them — long questions forced those rows wide instead of wrapping, unlike the Open Positions table where Market *is* first. Replaced with table-scoped `nth-child` rules targeting the actual question column in every table. Also: numeric columns (size/price/value/amount/P&L) are right-aligned with `tabular-nums`; trade status/outcome now render as human-readable labels (`fok_killed` → "FOK killed", `n/a` → "—") instead of raw snake_case; the whale-positions "Lists" column renders as small pill badges instead of a comma-joined string (this reused/renamed a CSS class — `.win-badge` — that had been defined back in Task #21 and never actually applied anywhere); Open Positions and Recent Trades are now wrapped in `.panel` cards like the other sections, for visual consistency; added table-row hover states, tightened card/section typography and spacing, and a small mobile breakpoint. Verified full-page and mobile-viewport screenshots, confirmed the fixed wrapping bug visually, and confirmed (by checking `scrollWidth` vs `clientWidth` directly, since Playwright's full-page screenshots don't expand nested horizontal-scroll containers) that tables which do need horizontal scroll on narrow screens still scroll correctly — that part was already working, not a bug.
 - [x] **Task #25** — Dashboard readability pass on whale data: (1) address-style trader names (no pseudonym on the leaderboard API) now display truncated as `0x353563…feed` instead of the full 42-char hex string, in both the Whale Leaderboards and Whale Open Positions sections — new `displayName()` JS helper in `index.html`, falls back to the real pseudonym when one exists; (2) `whale_tracker.py`'s `get_whale_signals()` now tracks a `window_profit` dict per trader across all 4 leaderboard windows and stores `weekly_pnl` on each `trader_records` entry (written to `whale_scan_cache.json`); Whale Open Positions table gained a "Weekly P&L" column (green/positive, red/negative, `—` when the trader isn't on the weekly window) sourced straight from that field, no extra scraping; (3) `fmtUsd()` switched from `toFixed(2)` to `toLocaleString(...)` so every dollar figure across the whole dashboard (balance, positions, trades, whale values) now gets thousand-separator commas. Verified with a mocked-data server (stubbed `Polymarket` import to dodge this sandbox's web3/dotenv version mismatch, monkeypatched `_build_stats()`) driven by headless Chromium — screenshotted the leaderboard and whale-positions tables directly, confirmed truncated addresses, correct pos/neg coloring on Weekly P&L, `—` for missing records, and comma-formatted values everywhere (including a 7-figure balance/position value) with no layout regressions.
+- [x] **Task #26** — Replaced the always-visible "Whale Open Positions" table with a click-to-view
+  detail modal on the leaderboard entries themselves. Each row in the Whale Leaderboards — Top 10
+  section is now a `<button class="lb-row" data-address="...">` (was a plain `<div>`) so it's
+  natively keyboard-accessible (Enter/Space) with no extra JS; clicking/activating one opens a
+  modal (`openTraderModal(address)` in `index.html`) that looks up the trader in the same
+  `whale_traders` cache data by address and shows their weekly P&L, total position count/value,
+  and a full positions table (market/side/avg/now/size/value) — same underlying data the deleted
+  table used to dump in full for every trader at once, just scoped to one trader on demand. Modal
+  closes via the × button, clicking the backdrop, or Escape. Handles the case where a trader is on
+  a leaderboard but has no cached position record (e.g. zero qualifying open positions that cycle)
+  with a plain empty state, not a misleading claim about leaderboard membership — an earlier draft
+  said "not on a tracked leaderboard window," which was wrong for a trader who clearly *is* on one
+  and just has no positions cached; simplified to leave that line blank when there's no window
+  data instead of asserting something false. Removed the now-dead `#whale-positions-table`
+  CSS/HTML/JS (`renderWhalePositions()`, `.scroll-y`, `.pnl-pos`/`.pnl-neg` — the pos/neg coloring
+  moved onto the modal's reused `.value.pos`/`.value.neg` classes) and the `whale-positions-updated`
+  timestamp element. `dashboard.py`'s `_build_stats()` was untouched — `whale_traders` was already
+  a plain pass-through of `whale_scan_cache.json`, so the modal's per-address lookup needed no
+  backend change. Verified with a mocked-data server + headless Chromium: confirmed the old table
+  is gone, clicking a leaderboard row opens the modal with correct data, Escape/backdrop-click/×
+  all close it, Enter on a keyboard-focused row opens it too, and the no-cached-positions trader
+  renders the plain empty state instead of the old table row it would have been silently missing
+  from before.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
