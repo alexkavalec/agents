@@ -15,7 +15,7 @@ Every 15 minutes, `Trader.one_best_trade()`:
    every open position each one currently holds
 2. Builds a consensus signal wherever 2+ independent whales hold the same side of the same
    market
-3. Keeps only signals first observed today, unless 5+ whales agree (see rule 6 below)
+3. Keeps only signals for markets resolving today, unless 5+ whales agree (see rule 6 below)
 4. Bets a flat 25% of current balance, buying the exact token the whales hold, via a FOK
    market order
 
@@ -27,8 +27,8 @@ Every 15 minutes, `Trader.one_best_trade()`:
 3. No daily loss limit, no daily spend cap
 4. Never bet the exact same (market, side) twice
 5. Never bet the opposite outcome of a market it already has a position in
-6. Only trade signals first observed today (UTC), unless 5+ independent whales agree on the
-   same (market, side) — then it's eligible regardless of timing
+6. Only trade markets that resolve today (UTC), unless 5+ independent whales agree on the
+   same (market, side) — then it's eligible regardless of when the market resolves
 
 That's it. There's no cooldown, no max open positions, no correlation filter, no signal-quality
 filtering beyond rule 6 above.

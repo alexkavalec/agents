@@ -269,7 +269,7 @@ class WhaleTracker:
 
 
         buckets: dict = defaultdict(lambda: {
-            "title": "", "asset": "", "side": "",
+            "title": "", "asset": "", "side": "", "end_date": "",
             "entries": [], "cur_prices": [], "whale_volumes": [],
             "whale_addresses": [],  # track which whales are in each bucket
         })
@@ -288,6 +288,7 @@ class WhaleTracker:
                 title     = pos.get("title", asset[:30])
                 avg_price = float(pos.get("avgPrice", 0) or 0)
                 cur_price = float(pos.get("curPrice", pos.get("currentValue", 0)) or 0)
+                end_date  = pos.get("endDate", "") or ""
 
                 if not asset or avg_price <= 0:
                     continue
@@ -302,6 +303,7 @@ class WhaleTracker:
                 buckets[key]["title"]         = title
                 buckets[key]["asset"]         = asset
                 buckets[key]["side"]          = side
+                buckets[key]["end_date"]      = end_date[:10]  # "YYYY-MM-DD", drop any time part
                 buckets[key]["entries"].append(avg_price)
                 buckets[key]["cur_prices"].append(cur_price)
                 buckets[key]["whale_volumes"].append(trader["volume"])
@@ -373,10 +375,12 @@ class WhaleTracker:
                 "new_whale_count":     new_whale_count,
                 "is_fresh":            new_whale_count > 0,
                 "first_seen":          earliest_seen,
-                # Was any whale in this bucket first observed today (UTC)? Distinct from
-                # is_fresh (true only the exact cycle a whale is first noticed) — this stays
-                # true all day, which is what "trade today's positions" actually means.
-                "is_today":            earliest_seen[:10] == now[:10],
+                # The market's own resolution date (Polymarket's "endDate", YYYY-MM-DD) —
+                # distinct from first_seen/is_fresh, which are about when the BOT noticed
+                # the position, not when the EVENT itself happens. "Trade today's events"
+                # means this, not observation freshness.
+                "end_date":            d.get("end_date", ""),
+                "is_today_event":      d.get("end_date", "") == now[:10],
             })
 
         _save_whale_state({"last_updated": now, "whale_positions": new_state_pos})

@@ -47,10 +47,11 @@ including a signal-timing filter (rule 6) on top of the "did enough whales agree
 2. **Consensus signal** — a `(market, side)` becomes a candidate signal once `MIN_WHALES_AGREE`
    (2+, in `whale_tracker.py`) independent whales hold it. Nothing else gates a signal at this
    stage — no price drift cap, no minimum whale count beyond 2, no filtering by market category
-   or liquidity. Each signal also carries `is_today` — was any whale in it first observed today
-   (UTC)? — computed from `first_seen`, which is tracked per (whale, market, side) in
-   `whale_positions_state.json` and persists across cycles (unlike `is_fresh`, which is only
-   true the exact cycle a whale is first noticed)
+   or liquidity. Each signal also carries `end_date` — the market's own resolution date, straight
+   from Polymarket's `endDate` field on `/positions` (e.g. `"2026-08-17"`) — and `is_today_event`,
+   whether that date is today (UTC). This is about when the *event* happens, not when the bot
+   first noticed the position (that's `first_seen`/`is_fresh`, a separate, unrelated concept still
+   used only for the `[NEW]` freshness tag in logs/Discord)
 3. **Signal selection** — signals are pre-sorted (fresh first, then whale count, then combined
    $ volume/profit); the bot walks the list and picks the first one that clears rules 4-6 below
 4. **Sizing** — flat `BET_FRACTION` (25%) of current balance, every single trade. No scaling by
@@ -71,13 +72,13 @@ regardless of how far the position moves against it.
    given side of a given market, a repeat signal for that same (market, side) is skipped
 5. **Never bet the opposite outcome of a market already bet on** — if the bot holds YES on a
    market, a consensus signal for NO on that same market is skipped (and vice versa)
-6. **Today-only, unless overwhelming consensus** — a signal is only eligible if `is_today` is
-   true (some whale in it was first observed today, UTC), *unless* `whale_count >=
-   HIGH_CONSENSUS_WHALES` (5, in `trade.py`), in which case it's eligible regardless of when it
-   was first seen. This lets the bot skip stale/ongoing whale positions by default (avoiding
-   markets whales have been quietly sitting in for weeks) while still catching genuinely strong,
-   overwhelming consensus on a longer-running position — e.g. 5+ independent whales already
-   positioned ahead of a later-resolving event
+6. **Today's events only, unless overwhelming consensus** — a signal is only eligible if
+   `is_today_event` is true (the market's own `end_date` is today, UTC — e.g. if it's August 17,
+   only markets resolving August 17), *unless* `whale_count >= HIGH_CONSENSUS_WHALES` (5, in
+   `trade.py`), in which case it's eligible regardless of when the market resolves. This keeps the
+   bot focused on same-day events by default (daily sports games, same-day crypto-price markets,
+   etc.) while still catching genuinely strong, overwhelming consensus on a market that resolves
+   further out — e.g. 5+ independent whales already positioned ahead of a later event
 
 Rules 4 and 5 are checked against both the live Polymarket positions API and a local
 persistent journal (`trader_trade_history.json`, see below) — the journal exists purely as a
@@ -118,11 +119,13 @@ refers to remains open (once a market resolves it can't be traded again anyway, 
 are harmless dead weight, not a correctness risk).
 
 `whale_positions_state.json` persists each whale's positions between cycles so the bot can tell
-a freshly-opened whale position (this cycle) from one they've held for a while — via `first_seen`
-per (whale, market, side), which also backs rule 6's `is_today` check (first_seen date == today,
-UTC). Note `first_seen` is bot-observation-relative, not the whale's actual open timestamp: if
-the bot was offline when a position first appeared, `first_seen` reflects whenever the bot next
-scanned it, not when the whale actually opened it.
+a freshly-opened whale position (this cycle) from one they've held for a while, via `first_seen`
+per (whale, market, side) — used only for the `[NEW]`/`is_fresh` freshness tag in logs and
+Discord alerts. It does **not** back rule 6 (that's `end_date`/`is_today_event`, sourced fresh
+from Polymarket's `/positions` API every cycle, not persisted state) — `first_seen` is
+bot-observation-relative (if the bot was offline when a position first appeared, `first_seen`
+reflects whenever the bot next scanned it, not when the whale actually opened it), which is
+exactly why it's the wrong signal for "does this event happen today."
 
 ---
 
@@ -180,25 +183,30 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   all close it, Enter on a keyboard-focused row opens it too, and the no-cached-positions trader
   renders the plain empty state instead of the old table row it would have been silently missing
   from before.
-- [x] **Task #27** — Added rule 6: signals are now only eligible if `is_today` (some whale in
-  the bucket was first observed today, UTC) — *unless* `whale_count >= HIGH_CONSENSUS_WHALES`
-  (5, in `trade.py`), which makes an older/ongoing signal eligible regardless of timing. Confirmed
-  via clarifying questions with the user: "today" is based on the bot's existing `first_seen`
-  tracking (not the whale's literal on-chain open time, which Polymarket's positions API doesn't
-  expose — and not leaderboard-window membership, a less direct proxy), and the override threshold
-  is 5+ whales. `whale_tracker.py`'s `get_whale_signals()` now computes `is_today` per signal
-  (`earliest_seen[:10] == now[:10]`, i.e. same UTC calendar date) alongside the existing `is_fresh`
-  — the two are distinct: `is_fresh` is only true the exact cycle a whale is first noticed,
-  `is_today` stays true for the rest of that UTC day. `trade.py`'s eligibility loop (`one_best_
-  trade()`) gained a third filter alongside the two dedup rules; the "no eligible signal" log line
-  now reports how many were skipped for this reason specifically, since the old generic message
-  ("already bet on every consensus market this cycle") would otherwise be misleading when the
-  real cause is staleness rather than a dedup hit. Verified with two scripted `unittest.mock`
-  scenarios: a stale (not-today) signal with `whale_count=4` correctly skipped while a stale
-  signal with `whale_count=5` in the same batch was correctly picked (override), and a fresh
-  (`is_today=True`) signal with only `whale_count=2` was still eligible on its own (default path
-  unaffected) — plus a third run confirming the "N skipped as not-today" log line fires when
-  every signal in a cycle fails the filter.
+- [x] **Task #27** — Added rule 6: signals only eligible if `is_today` (some whale in the bucket
+  first *observed* today, UTC), unless `whale_count >= HIGH_CONSENSUS_WHALES` (5). **Superseded
+  by Task #28 below** — this interpreted "today" as bot-observation freshness (`first_seen`),
+  which the user then clarified was wrong: they meant the market's own event/resolution date, not
+  when the bot happened to notice the position. Left in the changelog for the record; the field
+  and gating logic it added no longer exist as of Task #28.
+- [x] **Task #28** — Corrected rule 6 per user clarification ("only make do positions on today's
+  events, example if its august 17th, only open positions for august 17th, and so on"): replaced
+  the `first_seen`-based `is_today` from Task #27 with `end_date`/`is_today_event`, sourced from
+  the `endDate` field Polymarket's `/positions` API returns on every position (confirmed live via
+  curl against real whale wallets — present on all 50/50 sampled positions, sports games and
+  long-running markets alike, e.g. `"Knicks vs. Cavaliers" -> "2026-05-26"`). `end_date` is
+  captured per-bucket in `whale_tracker.py`'s `get_whale_signals()` (truncated to `YYYY-MM-DD`,
+  dropping any time-of-day component) and `is_today_event` is `end_date == today (UTC)`. This is
+  a genuinely different signal from `first_seen`/`is_fresh` (kept, unchanged, for the `[NEW]`
+  freshness tag only) — an event's resolution date doesn't move cycle to cycle, so unlike the old
+  bot-observation-relative version, this doesn't depend on the bot having been running
+  continuously. `trade.py`'s eligibility gate and log lines (cycle summary, `Selected:` line,
+  "no eligible signal" message) all updated to reference `is_today_event`/`end_date` instead of
+  the old fields; the override threshold (5+ whales) is unchanged from Task #27. Verified with a
+  scripted `unittest.mock` scenario covering all three paths (future-dated event + low consensus
+  → skipped; future-dated event + 5-whale consensus → eligible via override; today-dated event +
+  low consensus → eligible on its own, default path unaffected) — same shape of test as Task #27,
+  updated for the corrected field names and semantics.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
