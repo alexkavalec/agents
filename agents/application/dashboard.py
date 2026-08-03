@@ -65,9 +65,9 @@ def _build_stats() -> dict:
             {
                 "title": p.get("title", ""),
                 "outcome": p.get("outcome", ""),
-                "size": p.get("size"),
                 "avg_price": p.get("avgPrice"),
                 "cur_price": p.get("curPrice"),
+                "amount_traded": p.get("initialValue"),
                 "current_value": p.get("currentValue"),
             }
             for p in positions
