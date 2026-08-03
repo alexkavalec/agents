@@ -25,10 +25,10 @@ ABSOLUTE_MIN_TRADE = 1.0   # Polymarket's own order minimum (~$1) — an exchang
 STATE_FILE = "trader_trade_history.json"  # every (token_id, title, side) ever bought —
                                             # backs the two dedup rules below, as a
                                             # redundant check alongside the live positions API
-HIGH_CONSENSUS_WHALES = 5  # bypass the "today only" filter (rule 6) when this many+
-                            # independent whales agree on the same (market, side) —
-                            # strong enough to also catch whales already positioned
-                            # ahead of a later-resolving event, not just fresh entries
+HIGH_CONSENSUS_WHALES = 5  # bypass the "today's events only" filter (rule 6) when this
+                            # many+ independent whales agree on the same (market, side) —
+                            # strong enough to also catch whales positioned ahead of a
+                            # market that resolves later than today
 # =========================================================================
 
 
@@ -155,8 +155,8 @@ class Trader:
             held_tokens = {p.get("asset") for p in open_positions if p.get("asset")}
 
             # Signals arrive pre-sorted: fresh first, then whale_count, then whale_volume.
-            # Filter down to every signal that clears both dedup rules AND the today/
-            # consensus timing rule (see rule 6 below), then try them IN ORDER until one
+            # Filter down to every signal that clears both dedup rules AND the today's-
+            # events-only timing rule (see rule 6 below), then try them IN ORDER until one
             # actually fills — a single signal that can't execute (FOK killed, or the
             # market's already moved outside Polymarket's tradeable [0.01, 0.99] price
             # range) shouldn't burn the whole 15-minute cycle when other valid consensus
@@ -172,13 +172,13 @@ class Trader:
                     continue  # same exact bet already made
                 if opp_key in open_pairs or opp_key in traded_pairs:
                     continue  # already holding the opposite outcome of this market
-                if not s.get("is_today", False) and s["whale_count"] < HIGH_CONSENSUS_WHALES:
+                if not s.get("is_today_event", False) and s["whale_count"] < HIGH_CONSENSUS_WHALES:
                     skipped_not_today += 1
-                    continue  # not first-seen today, and consensus isn't overwhelming enough to override
+                    continue  # market doesn't resolve today, and consensus isn't overwhelming enough to override
                 eligible.append(s)
 
             if not eligible:
-                extra = f" ({skipped_not_today} skipped as not-today / not enough consensus)" if skipped_not_today else ""
+                extra = f" ({skipped_not_today} skipped as not-today's-event / not enough consensus)" if skipped_not_today else ""
                 print(f"  ✗ No eligible whale signal this cycle{extra}. Skipping.")
                 return
 
@@ -215,12 +215,16 @@ class Trader:
         whale_vol   = candidate["whale_volume_total"]
         is_fresh    = candidate["is_fresh"]
         drift       = candidate["price_drift"]
+        end_date    = candidate.get("end_date") or "unknown"
+        is_today    = candidate.get("is_today_event", False)
 
         print(f"")
         print(f"  Selected: \"{question[:80]}\"")
         print(f"  Signal: {whale_count} whale(s) {'[FRESH]' if is_fresh else '[ongoing]'}  "
               f"{trade_side.upper()}  entry {candidate['avg_entry']:.3f} -> now {candidate['cur_price']:.3f}  "
               f"({drift:.0%} drift)  combined ${whale_vol:,}")
+        print(f"  Event date: {end_date}"
+              f"{'  [TODAY]' if is_today else f'  [not today — allowed via {whale_count}-whale consensus override]'}")
 
         if not token_id:
             print("  ✗ Signal had no token ID — skipping.")
