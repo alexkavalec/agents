@@ -325,8 +325,10 @@ class WhaleTracker:
                 trader_records.append({
                     "name": trader["name"] or trader["address"][:10] + "...",
                     "address": trader["address"],
-                    "windows": trader["windows"],
-                    "weekly_pnl": trader.get("window_profit", {}).get("weekly"),
+                    # profit per leaderboard window the trader appears on (today/weekly/
+                    # monthly/all_time) — same source as the leaderboard columns, lets the
+                    # dashboard show a trader's full record, not just one window
+                    "window_profit": trader.get("window_profit", {}),
                     "positions": sorted(trader_positions, key=lambda p: p["value"], reverse=True),
                 })
 
