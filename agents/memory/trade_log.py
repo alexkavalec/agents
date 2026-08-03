@@ -63,4 +63,5 @@ def get_stats() -> dict:
         "total_attempts": len(history),
         "filled": len(filled),
         "fok_killed": len([t for t in history if t.get("status") == "fok_killed"]),
+        "untradeable": len([t for t in history if t.get("status") == "untradeable"]),
     }
