@@ -224,7 +224,7 @@
     <div class="scroll">
       <table id="modal-positions-table">
         <thead>
-          <tr><th>Market</th><th>Side</th><th>Avg</th><th>Now</th><th>Size</th><th>Value</th></tr>
+          <tr><th>Market</th><th>Side</th><th>Size</th><th>To Win</th><th>Avg</th><th>Now</th><th>Value</th></tr>
         </thead>
         <tbody id="modal-positions-body"></tbody>
       </table>
@@ -465,10 +465,11 @@ function openTraderModal(address) {
       <tr>
         <td>${escapeHtml(p.title || "")}</td>
         <td class="${sideClass(p.side)}">${escapeHtml(p.side || "")}</td>
+        <td>${p.size ?? "—"}</td>
+        <td>${fmtUsd(p.to_win)}</td>
         <td>${fmtPrice(p.avg_price)}</td>
         <td>${fmtPrice(p.cur_price)}</td>
-        <td>${p.size ?? "—"}</td>
-        <td>${fmtUsd(p.value)}</td>
+        <td class="${pnlClass(p.value, p.amount_traded)}">${fmtUsd(p.value)}</td>
       </tr>
     `).join("");
 
