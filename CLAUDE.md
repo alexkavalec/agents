@@ -15,6 +15,10 @@
   (the bot's SOLE trade signal source)
 - `agents/polymarket/polymarket.py` — CLOB client wrapper: auth, balance, positions, orders
 - `agents/memory/trade_log.py` / `agents/memory/scoreboard.py` — trade history + win/loss tracking
+- `agents/application/dashboard.py` + `agents/application/dashboard_static/index.html` — read-only
+  stats web dashboard (balance, open positions, trade history), started by `run_loop` in a
+  background thread. Stdlib `http.server` only, no new dependencies. Optional `DASHBOARD_TOKEN`
+  gates it via `?key=` query param — see Environment/Railway Notes below.
 
 Everything else from the original fork (Gamma market scanner, Chroma RAG, OpenAI-based
 superforecaster/trade-constructor/market-selector, news/Twitter/Reddit/Wikipedia/Tavily
@@ -125,6 +129,7 @@ disconnected. Do not resurrect either plan without an explicit new decision from
 - [x] **Task #17** — Scrapped the AI market-scan pipeline from the entry path — bot began trading strictly off whale-leaderboard consensus. (Superseded by Task #19 below, which removed the risk-management layer this task still had.)
 - [x] **Task #18** — Full repo strip-down to leaderboard-only, zero unused code (deleted `executor.py`, `prompts.py`, `creator.py`, `cron.py`, `chroma.py`, `news.py`, `data_enricher.py`, `search.py`, `gamma.py`, `agents/utils/`, tests; trimmed `polymarket.py`/`whale_tracker.py`; made position management mechanical). Also stripped repo-level scaffolding — `.github/` CI/templates, `CONTRIBUTING.md`, `.pre-commit-config.yaml`, `docs/`, unused `scripts/`, pruned `requirements.txt` 172→67 packages, rewrote `README.md`.
 - [x] **Task #19** — Removed ALL remaining risk management. Deleted `maintain_positions`/`_close_position`/stop-loss/take-profit entirely — the bot now never sells a position under any circumstance. Deleted daily loss floor, daily spend cap, max open positions, trade cooldown, and the keyword correlation filter. Sizing changed from scaled (3%–10% by whale count/volume) to a flat 25% of balance on every trade. Replaced the correlation filter with two narrow, explicit rules: never bet the exact same (market, side) twice, never bet the opposite side of a market already held — both checked against live positions + a new persistent `trader_trade_history.json` journal. Removed the price-drift cap from `whale_tracker.py` (still computed and displayed, just no longer gates a signal). Interval changed from 60min/30min-default to 15min. Removed now-dead `Polymarket.get_last_trade_minutes_ago`/`get_midpoint_price`/`get_held_token_ids`, and `trade_log.log_lesson`/`get_recent_lessons`/`FORECASTER_LOG_FILE` (fed by the now-deleted `maintain_positions`). State file renamed `trader_daily_state.json` → `trader_trade_history.json` (no more daily reset — it's a permanent trade journal now, not a per-day budget tracker). Verified the new dedup/opposite-outcome logic against 7 scripted scenarios (clean trade, same-bet-blocked, opposite-blocked, journal-fallback-blocked, second-signal-picked-when-first-blocked, balance-too-low, bumped-to-$1-minimum) before shipping.
+- [x] **Task #20** — Added a read-only stats dashboard (`agents/application/dashboard.py` + `dashboard_static/index.html`), started in a background thread from `run_loop` on `$PORT`. Stdlib `http.server` only — deliberately no FastAPI/uvicorn re-added, given the whole point of Task #18 was cutting dependencies. Serves `/` (HTML page: balance, open positions, recent trades, W/L record) and `/api/stats` (same data as JSON), both gated by an optional `DASHBOARD_TOKEN` (`?key=` query param) since this exposes balance/positions/trade history if left public. Added `get_scoreboard_stats()` to `scoreboard.py` (structured dict version of the existing `get_scoreboard_line()` string) for the dashboard to consume. Verified with a real server-plus-headless-browser smoke test (mocked Polymarket, both with and without `DASHBOARD_TOKEN`, screenshot-checked the rendered page) before shipping — see git history for the test scripts (not committed, scratch-only).
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
@@ -173,6 +178,9 @@ network is **None** (all blocked). To allow Polymarket API access:
 - Container restarts don't lose state: `trader_trade_history.json` persists on Railway volume
 - Logs are collected by Railway's log aggregator — rapid-fire `print()` calls get reordered
   - **Fix**: batch entire log sections into single `print("\n".join([...]))` call
+- **Stats dashboard**: enable "Public Networking" on the service to get a URL for it — Railway
+  injects `$PORT`, which `dashboard.py` binds to automatically. Set `DASHBOARD_TOKEN` before
+  doing this, or your balance/positions/trade history are readable by anyone with the URL.
 
 ---
 

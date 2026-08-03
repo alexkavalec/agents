@@ -123,8 +123,8 @@ def resolve_completed(polymarket_client) -> int:
     return resolved_count
 
 
-def get_scoreboard_line() -> str:
-    """Return a one-line scoreboard string."""
+def get_scoreboard_stats() -> dict:
+    """Return the win/loss record as structured data (used by get_scoreboard_line and the dashboard)."""
     history = _load()
     filled = [t for t in history if t.get("status") == "filled"]
 
@@ -139,11 +139,23 @@ def get_scoreboard_line() -> str:
     total_pnl = sum(t.get("pnl_usd", 0) or 0 for t in filled
                     if t.get("outcome") in ("win", "loss", "push"))
 
-    pnl_str = f"+${total_pnl:.2f}" if total_pnl >= 0 else f"-${abs(total_pnl):.2f}"
+    return {
+        "wins": len(wins),
+        "losses": len(losses),
+        "pushes": len(pushes),
+        "pending": len(pending),
+        "win_pct": round(win_pct, 1),
+        "total_pnl": round(total_pnl, 2),
+    }
 
+
+def get_scoreboard_line() -> str:
+    """Return a one-line scoreboard string."""
+    s = get_scoreboard_stats()
+    pnl_str = f"+${s['total_pnl']:.2f}" if s['total_pnl'] >= 0 else f"-${abs(s['total_pnl']):.2f}"
     return (
-        f"  │  Score   : {len(wins)}W - {len(losses)}L - {len(pushes)}P  "
-        f"({win_pct:.0f}% win rate)  P&L: {pnl_str}  [{len(pending)} pending]"
+        f"  │  Score   : {s['wins']}W - {s['losses']}L - {s['pushes']}P  "
+        f"({s['win_pct']:.0f}% win rate)  P&L: {pnl_str}  [{s['pending']} pending]"
     )
 
 

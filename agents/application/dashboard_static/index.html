@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Bot Dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d12;
+    --panel: #131720;
+    --border: #232838;
+    --text: #e6e8ef;
+    --muted: #8a92a6;
+    --green: #3ddc84;
+    --red: #ff5c5c;
+    --accent: #7c8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 24px 16px 64px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .value.pos { color: var(--green); }
+  .value.neg { color: var(--red); }
+  section { margin-bottom: 28px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+  .side-yes { color: var(--green); }
+  .side-no { color: var(--red); }
+  .status-filled { color: var(--green); }
+  .status-fok_killed, .status-error { color: var(--muted); }
+  .outcome-win { color: var(--green); }
+  .outcome-loss { color: var(--red); }
+  .outcome-pending { color: var(--muted); }
+  .empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
+  .refresh { color: var(--muted); font-size: 12px; }
+  table-wrap { overflow-x: auto; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Whale-Leaderboard Trading Bot</h1>
+  <div class="subtitle">Read-only stats · <span id="updated">loading…</span></div>
+
+  <div class="cards" id="cards"></div>
+
+  <section>
+    <h2>Open Positions</h2>
+    <div class="scroll">
+      <table id="positions-table">
+        <thead>
+          <tr><th>Market</th><th>Side</th><th>Size</th><th>Avg</th><th>Now</th><th>Value</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="empty" id="positions-empty" style="display:none;">No open positions.</div>
+  </section>
+
+  <section>
+    <h2>Recent Trades</h2>
+    <div class="scroll">
+      <table id="trades-table">
+        <thead>
+          <tr><th>Time</th><th>Market</th><th>Side</th><th>Amount</th><th>Status</th><th>Outcome</th><th>P&amp;L</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="empty" id="trades-empty" style="display:none;">No trades yet.</div>
+  </section>
+</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const key = params.get("key");
+const apiUrl = "/api/stats" + (key ? ("?key=" + encodeURIComponent(key)) : "");
+
+function fmtUsd(n) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const sign = n < 0 ? "-" : "";
+  return sign + "$" + Math.abs(n).toFixed(2);
+}
+function fmtPrice(n) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  return Number(n).toFixed(3);
+}
+function fmtTime(iso) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso + (iso.endsWith("Z") ? "" : "Z")).toLocaleString();
+  } catch (e) { return iso; }
+}
+function sideClass(side) {
+  const s = (side || "").toLowerCase();
+  return s === "yes" ? "side-yes" : s === "no" ? "side-no" : "";
+}
+
+function render(data) {
+  document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
+
+  const sb = data.scoreboard || {};
+  const ts = data.trade_stats || {};
+  const cards = [
+    { label: "Balance", value: fmtUsd(data.balance), cls: "" },
+    { label: "Open Positions", value: (data.open_positions || []).length, cls: "" },
+    { label: "Record", value: `${sb.wins ?? 0}W-${sb.losses ?? 0}L-${sb.pushes ?? 0}P`, cls: "" },
+    { label: "Win Rate", value: (sb.win_pct ?? 0) + "%", cls: "" },
+    { label: "P&L", value: fmtUsd(sb.total_pnl), cls: (sb.total_pnl || 0) >= 0 ? "pos" : "neg" },
+    { label: "Trades Filled", value: `${ts.filled ?? 0} / ${ts.total_attempts ?? 0}`, cls: "" },
+  ];
+  document.getElementById("cards").innerHTML = cards.map(c =>
+    `<div class="card"><div class="label">${c.label}</div><div class="value ${c.cls}">${c.value}</div></div>`
+  ).join("");
+
+  const posBody = document.querySelector("#positions-table tbody");
+  const positions = data.open_positions || [];
+  document.getElementById("positions-empty").style.display = positions.length ? "none" : "block";
+  posBody.innerHTML = positions.map(p => `
+    <tr>
+      <td>${escapeHtml(p.title || "")}</td>
+      <td class="${sideClass(p.outcome)}">${escapeHtml(p.outcome || "")}</td>
+      <td>${p.size ?? "—"}</td>
+      <td>${fmtPrice(p.avg_price)}</td>
+      <td>${fmtPrice(p.cur_price)}</td>
+      <td>${fmtUsd(p.current_value)}</td>
+    </tr>
+  `).join("");
+
+  const tradesBody = document.querySelector("#trades-table tbody");
+  const trades = data.recent_trades || [];
+  document.getElementById("trades-empty").style.display = trades.length ? "none" : "block";
+  tradesBody.innerHTML = trades.map(t => `
+    <tr>
+      <td>${fmtTime(t.timestamp)}</td>
+      <td>${escapeHtml(t.question || "")}</td>
+      <td class="${sideClass(t.side)}">${escapeHtml(t.side || "")}</td>
+      <td>${fmtUsd(t.amount_usd)}</td>
+      <td class="status-${t.status}">${escapeHtml(t.status || "")}</td>
+      <td class="outcome-${t.outcome}">${escapeHtml(t.outcome || "")}</td>
+      <td>${t.pnl_usd === null || t.pnl_usd === undefined ? "—" : fmtUsd(t.pnl_usd)}</td>
+    </tr>
+  `).join("");
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(apiUrl);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    render(await res.json());
+  } catch (e) {
+    document.getElementById("updated").textContent = "error: " + e.message;
+  }
+}
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
