@@ -7,7 +7,9 @@ independent whales hold it. No other filtering is applied — this is a pure
 observation of what the leaderboard is doing, not a risk-managed selection.
 
 Position tracking: whale positions are persisted to WHALE_STATE_FILE between cycles
-so fresh entries (new this cycle) can be distinguished from ongoing holds.
+so fresh entries (new this cycle) can be distinguished from ongoing holds. Every scan
+also writes WHALE_CACHE_FILE — leaderboards + each trader's current positions — so
+the dashboard can display them without re-scraping on every page load.
 
 All endpoints are public — no API key required.
   polymarket.com/leaderboard/overall/{window}/profit — SSR leaderboard pages (scraped)
@@ -27,6 +29,7 @@ PM_HEADERS = {
     "Accept": "text/html",
 }
 WHALE_STATE_FILE = "whale_positions_state.json"
+WHALE_CACHE_FILE = "whale_scan_cache.json"  # leaderboards + per-trader positions, for the dashboard
 
 # Minimum current position value to count as meaningful smart-money signal
 # (not a risk rule — pure data hygiene, filters out dust positions that would
@@ -55,6 +58,22 @@ def _save_whale_state(state: dict) -> None:
             json.dump(state, f, indent=2)
     except Exception:
         pass
+
+
+def _save_scan_cache(leaderboards: dict, traders: list, signals: list) -> None:
+    """Persist the leaderboards + per-trader positions from this scan so the
+    dashboard can read them instantly instead of re-scraping on every request —
+    the dashboard refreshes every minute, far more often than this scan runs."""
+    try:
+        with open(WHALE_CACHE_FILE, "w") as f:
+            json.dump({
+                "last_updated": _now_iso(),
+                "leaderboards": leaderboards,
+                "traders": traders,
+                "signals": signals,
+            }, f, indent=2)
+    except Exception as e:
+        print(f"  [WhaleTracker] could not save scan cache: {e}")
 
 
 def _req(url: str, params: dict = None) -> object:
@@ -192,18 +211,32 @@ class WhaleTracker:
 
         today, weekly, monthly, alltime = self.get_top_traders_all_windows(top_n)
         lb_log.extend(self._format_leaderboard(today, weekly, monthly, alltime))
+        cache_leaderboards = {
+            window: [
+                {"name": t["name"] or t["address"][:10] + "...", "address": t["address"],
+                 "profit": round(t["volume"], 2)}
+                for t in lst
+            ]
+            for window, lst in (("today", today), ("weekly", weekly),
+                                 ("monthly", monthly), ("all_time", alltime))
+        }
 
-        # Combine all four windows, deduplicate by address
-        seen_addrs: set = set()
-        traders: list = []
-        for lst in (alltime, monthly, weekly, today):  # alltime first so rank ordering is preserved
+        # Combine all four windows, deduplicate by address — track every window
+        # a trader appears on (for the dashboard), not just the first one found
+        by_addr: dict = {}
+        for window, lst in (("all_time", alltime), ("monthly", monthly),
+                             ("weekly", weekly), ("today", today)):
             for t in lst:
-                if t["address"] not in seen_addrs:
-                    seen_addrs.add(t["address"])
-                    traders.append(t)
+                addr = t["address"]
+                if addr not in by_addr:
+                    by_addr[addr] = {**t, "windows": [window]}
+                else:
+                    by_addr[addr]["windows"].append(window)
+        traders: list = list(by_addr.values())
 
         if not traders:
             sig_log.append("  [WhaleTracker] No traders found from any window.")
+            _save_scan_cache(cache_leaderboards, [], [])
             return [], "\n".join(lb_log), "\n".join(sig_log)
 
         sig_log.append(
@@ -217,12 +250,15 @@ class WhaleTracker:
             "entries": [], "cur_prices": [], "whale_volumes": [],
             "whale_addresses": [],  # track which whales are in each bucket
         })
+        trader_records: list = []  # per-trader position lists, for the dashboard
 
         for trader in traders:
             try:
                 positions = self.get_positions(trader["address"])
             except Exception:
                 continue
+
+            trader_positions = []
             for pos in positions:
                 asset     = pos.get("asset", "")
                 side      = pos.get("outcome", "") or pos.get("side", "")
@@ -247,6 +283,20 @@ class WhaleTracker:
                 buckets[key]["cur_prices"].append(cur_price)
                 buckets[key]["whale_volumes"].append(trader["volume"])
                 buckets[key]["whale_addresses"].append(trader["address"])
+
+                trader_positions.append({
+                    "title": title, "side": side,
+                    "avg_price": round(avg_price, 4), "cur_price": round(cur_price, 4),
+                    "size": round(size, 2), "value": round(cur_val, 2),
+                })
+
+            if trader_positions:
+                trader_records.append({
+                    "name": trader["name"] or trader["address"][:10] + "...",
+                    "address": trader["address"],
+                    "windows": trader["windows"],
+                    "positions": sorted(trader_positions, key=lambda p: p["value"], reverse=True),
+                })
 
         # Load previous state to detect new entries this cycle
         now = _now_iso()
@@ -328,5 +378,7 @@ class WhaleTracker:
             if len(signals) > 5:
                 sig_log.append(f"  │  ... +{len(signals)-5} more")
             sig_log.append(f"  └───────────────────────────────────────────────────────")
+
+        _save_scan_cache(cache_leaderboards, trader_records, signals)
 
         return signals, "\n".join(lb_log), "\n".join(sig_log)

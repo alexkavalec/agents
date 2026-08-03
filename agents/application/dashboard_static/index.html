@@ -24,12 +24,12 @@
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     padding: 24px 16px 64px;
   }
-  .wrap { max-width: 960px; margin: 0 auto; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
   .cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 12px;
     margin-bottom: 28px;
   }
@@ -44,9 +44,18 @@
   .value.pos { color: var(--green); }
   .value.neg { color: var(--red); }
   section { margin-bottom: 28px; }
-  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 10px; }
+  .section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0; }
+  .as-of { font-size: 11px; color: var(--muted); }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td:first-child, th:first-child { white-space: normal; }
   th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; }
   tr:last-child td { border-bottom: none; }
   .side-yes { color: var(--green); }
@@ -57,9 +66,29 @@
   .outcome-loss { color: var(--red); }
   .outcome-pending { color: var(--muted); }
   .empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
-  .refresh { color: var(--muted); font-size: 12px; }
-  table-wrap { overflow-x: auto; }
   .scroll { overflow-x: auto; }
+  .scroll-y { max-height: 360px; overflow-y: auto; }
+
+  .lb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .lb-col h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 8px; }
+  .lb-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .lb-row:last-child { border-bottom: none; }
+  .lb-rank { color: var(--muted); width: 18px; display: inline-block; }
+  .lb-profit { font-variant-numeric: tabular-nums; }
+
+  .win-badge {
+    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    background: rgba(124,140,255,0.15); color: var(--accent); margin-right: 4px;
+  }
+
+  #pnl-chart-wrap { position: relative; }
+  #pnl-tooltip-html {
+    position: absolute; pointer-events: none; background: #1c2130; border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 9px; font-size: 12px; display: none; white-space: nowrap;
+    transform: translate(-50%, -100%); margin-top: -10px;
+  }
+  #pnl-tooltip-html .t-date { color: var(--muted); font-size: 11px; }
+  #pnl-tooltip-html .t-val { font-weight: 600; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -68,6 +97,17 @@
   <div class="subtitle">Read-only stats · <span id="updated">loading…</span></div>
 
   <div class="cards" id="cards"></div>
+
+  <section>
+    <div class="section-head"><h2>Profit Over Time</h2></div>
+    <div class="panel">
+      <div id="pnl-chart-wrap">
+        <div id="pnl-chart"></div>
+        <div id="pnl-tooltip-html"></div>
+      </div>
+      <div class="empty" id="pnl-empty" style="display:none;">No resolved trades yet — the chart fills in as positions settle.</div>
+    </div>
+  </section>
 
   <section>
     <h2>Open Positions</h2>
@@ -94,17 +134,51 @@
     </div>
     <div class="empty" id="trades-empty" style="display:none;">No trades yet.</div>
   </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Whale Leaderboards — Top 10</h2>
+      <span class="as-of" id="whale-updated"></span>
+    </div>
+    <div class="panel lb-grid" id="leaderboards"></div>
+    <div class="empty" id="leaderboards-empty" style="display:none;">No leaderboard data yet — fills in after the bot's next cycle.</div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Whale Open Positions</h2>
+      <span class="as-of" id="whale-positions-updated"></span>
+    </div>
+    <div class="panel scroll scroll-y">
+      <table id="whale-positions-table">
+        <thead>
+          <tr><th>Trader</th><th>Lists</th><th>Market</th><th>Side</th><th>Value</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="empty" id="whale-positions-empty" style="display:none;">No whale position data yet.</div>
+  </section>
 </div>
 
 <script>
 const params = new URLSearchParams(window.location.search);
 const key = params.get("key");
 const apiUrl = "/api/stats" + (key ? ("?key=" + encodeURIComponent(key)) : "");
+let lastData = null;
 
 function fmtUsd(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
   const sign = n < 0 ? "-" : "";
   return sign + "$" + Math.abs(n).toFixed(2);
+}
+function fmtCompactUsd(n) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const abs = Math.abs(n);
+  const sign = n < 0 ? "-" : "";
+  if (abs >= 1_000_000) return sign + "$" + (abs / 1_000_000).toFixed(1) + "M";
+  if (abs >= 1_000) return sign + "$" + (abs / 1_000).toFixed(0) + "k";
+  return fmtUsd(n);
 }
 function fmtPrice(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
@@ -116,12 +190,183 @@ function fmtTime(iso) {
     return new Date(iso + (iso.endsWith("Z") ? "" : "Z")).toLocaleString();
   } catch (e) { return iso; }
 }
+function fmtDateShort(iso) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso + (iso.endsWith("Z") ? "" : "Z")).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch (e) { return iso; }
+}
 function sideClass(side) {
   const s = (side || "").toLowerCase();
   return s === "yes" ? "side-yes" : s === "no" ? "side-no" : "";
 }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ---- Profit-over-time line chart (inline SVG, no charting library) ----
+function renderPnlChart(points) {
+  const container = document.getElementById("pnl-chart");
+  const emptyEl = document.getElementById("pnl-empty");
+  const tooltip = document.getElementById("pnl-tooltip-html");
+
+  if (!points || points.length === 0) {
+    container.innerHTML = "";
+    tooltip.style.display = "none";
+    emptyEl.style.display = "block";
+    return;
+  }
+  emptyEl.style.display = "none";
+
+  const width = Math.max(280, container.clientWidth || 600);
+  const height = 220;
+  const padL = 54, padR = 16, padT = 20, padB = 24;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  const values = points.map(p => p.cumulative_pnl);
+  let minV = Math.min(0, ...values);
+  let maxV = Math.max(0, ...values);
+  if (minV === maxV) { minV -= 1; maxV += 1; }
+  const span = maxV - minV;
+  minV -= span * 0.08;
+  maxV += span * 0.08;
+
+  const n = points.length;
+  const xAt = i => padL + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const yAt = v => padT + plotH - ((v - minV) / (maxV - minV)) * plotH;
+
+  const zeroY = yAt(0);
+  const linePath = points.map((p, i) => `${xAt(i).toFixed(1)},${yAt(p.cumulative_pnl).toFixed(1)}`).join(" ");
+  const areaPath = `${xAt(0).toFixed(1)},${zeroY.toFixed(1)} ` + linePath + ` ${xAt(n - 1).toFixed(1)},${zeroY.toFixed(1)}`;
+
+  const endVal = values[n - 1];
+  const endColorVar = endVal >= 0 ? "var(--green)" : "var(--red)";
+  const endY = yAt(endVal);
+  const endLabelY = Math.max(padT + 10, Math.min(padT + plotH - 4, endY - 8));
+
+  container.innerHTML = `
+    <svg id="pnl-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="display:block;">
+      <line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${width - padR}" y2="${zeroY.toFixed(1)}" stroke="var(--border)" stroke-width="1"/>
+      <polygon points="${areaPath}" fill="var(--accent)" opacity="0.10"/>
+      <polyline points="${linePath}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <text x="${width - padR}" y="${endLabelY}" text-anchor="end" font-size="12" font-weight="600" fill="${endColorVar}">${fmtUsd(endVal)}</text>
+      <text x="${padL}" y="${height - 6}" font-size="11" fill="var(--muted)">${fmtDateShort(points[0].date)}</text>
+      <text x="${width - padR}" y="${height - 6}" text-anchor="end" font-size="11" fill="var(--muted)">${fmtDateShort(points[n - 1].date)}</text>
+      <line id="pnl-crosshair" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" stroke="var(--muted)" stroke-width="1" style="display:none;"/>
+      <circle id="pnl-dot" cx="0" cy="0" r="4" fill="var(--accent)" stroke="var(--panel)" stroke-width="2" style="display:none;"/>
+      <rect id="pnl-hit" x="${padL}" y="${padT}" width="${Math.max(plotW, 1)}" height="${Math.max(plotH, 1)}" fill="transparent"/>
+    </svg>
+  `;
+
+  const svgEl = document.getElementById("pnl-svg");
+  const hit = document.getElementById("pnl-hit");
+  const crosshair = document.getElementById("pnl-crosshair");
+  const dot = document.getElementById("pnl-dot");
+
+  function pointerToIndex(clientX) {
+    const rect = svgEl.getBoundingClientRect();
+    const scaleX = width / rect.width;
+    const xInSvg = (clientX - rect.left) * scaleX;
+    let idx = Math.round(((xInSvg - padL) / plotW) * (n - 1));
+    return Math.max(0, Math.min(n - 1, idx));
+  }
+
+  function showAt(idx) {
+    const px = xAt(idx), py = yAt(points[idx].cumulative_pnl);
+    crosshair.setAttribute("x1", px); crosshair.setAttribute("x2", px);
+    crosshair.style.display = "block";
+    dot.setAttribute("cx", px); dot.setAttribute("cy", py);
+    dot.style.display = "block";
+
+    const rect = svgEl.getBoundingClientRect();
+    const cssScale = rect.width / width;
+    const wrapRect = container.parentElement.getBoundingClientRect();
+    const leftPx = rect.left - wrapRect.left + px * cssScale;
+    const topPx = rect.top - wrapRect.top + py * cssScale;
+
+    tooltip.style.left = leftPx + "px";
+    tooltip.style.top = topPx + "px";
+    tooltip.innerHTML = "";
+    const dateEl = document.createElement("div");
+    dateEl.className = "t-date";
+    dateEl.textContent = fmtTime(points[idx].date);
+    const valEl = document.createElement("div");
+    valEl.className = "t-val";
+    valEl.style.color = points[idx].cumulative_pnl >= 0 ? "var(--green)" : "var(--red)";
+    valEl.textContent = fmtUsd(points[idx].cumulative_pnl);
+    tooltip.appendChild(dateEl);
+    tooltip.appendChild(valEl);
+    if (points[idx].question) {
+      const qEl = document.createElement("div");
+      qEl.className = "t-date";
+      qEl.textContent = points[idx].question.slice(0, 40);
+      tooltip.appendChild(qEl);
+    }
+    tooltip.style.display = "block";
+  }
+
+  function hide() {
+    crosshair.style.display = "none";
+    dot.style.display = "none";
+    tooltip.style.display = "none";
+  }
+
+  hit.addEventListener("pointermove", e => showAt(pointerToIndex(e.clientX)));
+  hit.addEventListener("pointerleave", hide);
+}
+
+// ---- Leaderboards ----
+function renderLeaderboards(leaderboards) {
+  const wrap = document.getElementById("leaderboards");
+  const emptyEl = document.getElementById("leaderboards-empty");
+  const cols = [
+    { key: "today", label: "Today (unrealized)" },
+    { key: "weekly", label: "Weekly (7d profit)" },
+    { key: "monthly", label: "Monthly (30d profit)" },
+    { key: "all_time", label: "All-Time" },
+  ];
+  const hasAny = cols.some(c => (leaderboards[c.key] || []).length > 0);
+  emptyEl.style.display = hasAny ? "none" : "block";
+  wrap.style.display = hasAny ? "grid" : "none";
+
+  wrap.innerHTML = cols.map(c => {
+    const rows = (leaderboards[c.key] || []).map((t, i) => `
+      <div class="lb-row">
+        <span><span class="lb-rank">${i + 1}</span>${escapeHtml(t.name)}</span>
+        <span class="lb-profit">${fmtCompactUsd(t.profit)}</span>
+      </div>
+    `).join("");
+    return `<div class="lb-col"><h3>${escapeHtml(c.label)}</h3>${rows || '<div class="empty">—</div>'}</div>`;
+  }).join("");
+}
+
+// ---- Whale open positions (per trader) ----
+function renderWhalePositions(traders) {
+  const body = document.querySelector("#whale-positions-table tbody");
+  const emptyEl = document.getElementById("whale-positions-empty");
+  const rows = [];
+  (traders || []).forEach(t => {
+    (t.positions || []).forEach(p => {
+      rows.push({ trader: t.name, windows: (t.windows || []).join(", "), ...p });
+    });
+  });
+  rows.sort((a, b) => (b.value || 0) - (a.value || 0));
+
+  emptyEl.style.display = rows.length ? "none" : "block";
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td>${escapeHtml(r.trader)}</td>
+      <td>${escapeHtml(r.windows)}</td>
+      <td>${escapeHtml(r.title || "")}</td>
+      <td class="${sideClass(r.side)}">${escapeHtml(r.side || "")}</td>
+      <td>${fmtUsd(r.value)}</td>
+    </tr>
+  `).join("");
+}
 
 function render(data) {
+  lastData = data;
   document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
 
   const sb = data.scoreboard || {};
@@ -132,11 +377,14 @@ function render(data) {
     { label: "Record", value: `${sb.wins ?? 0}W-${sb.losses ?? 0}L-${sb.pushes ?? 0}P`, cls: "" },
     { label: "Win Rate", value: (sb.win_pct ?? 0) + "%", cls: "" },
     { label: "P&L", value: fmtUsd(sb.total_pnl), cls: (sb.total_pnl || 0) >= 0 ? "pos" : "neg" },
+    { label: "ROI", value: (sb.roi_pct ?? 0) + "%", cls: (sb.roi_pct || 0) >= 0 ? "pos" : "neg" },
     { label: "Trades Filled", value: `${ts.filled ?? 0} / ${ts.total_attempts ?? 0}`, cls: "" },
   ];
   document.getElementById("cards").innerHTML = cards.map(c =>
     `<div class="card"><div class="label">${c.label}</div><div class="value ${c.cls}">${c.value}</div></div>`
   ).join("");
+
+  renderPnlChart(data.pnl_history || []);
 
   const posBody = document.querySelector("#positions-table tbody");
   const positions = data.open_positions || [];
@@ -166,10 +414,12 @@ function render(data) {
       <td>${t.pnl_usd === null || t.pnl_usd === undefined ? "—" : fmtUsd(t.pnl_usd)}</td>
     </tr>
   `).join("");
-}
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const whaleUpdated = data.whale_last_updated ? fmtTime(data.whale_last_updated) : "no scan yet";
+  document.getElementById("whale-updated").textContent = "leaderboard as of " + whaleUpdated;
+  document.getElementById("whale-positions-updated").textContent = "as of " + whaleUpdated;
+  renderLeaderboards(data.whale_leaderboards || {});
+  renderWhalePositions(data.whale_traders || []);
 }
 
 async function refresh() {
@@ -182,8 +432,14 @@ async function refresh() {
   }
 }
 
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (lastData) renderPnlChart(lastData.pnl_history || []); }, 150);
+});
+
 refresh();
-setInterval(refresh, 30000);
+setInterval(refresh, 60000);
 </script>
 </body>
 </html>

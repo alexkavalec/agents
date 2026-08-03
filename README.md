@@ -63,10 +63,19 @@ signal and never sells a losing position. Only fund it with money you're fully p
 ## Stats dashboard
 
 `run-loop` also starts a tiny read-only web dashboard (stdlib `http.server`, no extra
-dependencies) alongside the trading loop, showing balance, open positions, and trade
-history. It listens on `$PORT` (defaults to 8080 locally). Visit `/`, or `/?key=...` if
-`DASHBOARD_TOKEN` is set — without a token the dashboard is publicly readable to anyone
-with the URL, so set one before exposing it. Data also available as JSON at `/api/stats`.
+dependencies) alongside the trading loop. It listens on `$PORT` (defaults to 8080
+locally) and refreshes itself every 60 seconds. Visit `/`, or `/?key=...` if
+`DASHBOARD_TOKEN` is set — without a token the dashboard is publicly readable to
+anyone with the URL, so set one before exposing it. Data also available as JSON at
+`/api/stats`.
+
+Shows:
+- Balance, open positions, win/loss record, ROI%, and a P&L chart (all live/updated
+  every poll)
+- The 4 whale leaderboards (today/weekly/monthly/all-time) and every open position
+  each tracked whale currently holds — this part only refreshes as often as the bot's
+  own 15-minute cycle runs (it reads a cache the bot writes; the dashboard polling
+  faster than that doesn't trigger extra scraping)
 
 ## Deployment
 

@@ -20,7 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agents.polymarket.polymarket import Polymarket
 from agents.memory.trade_log import get_stats, TRADE_HISTORY_FILE
-from agents.memory.scoreboard import get_scoreboard_stats
+from agents.memory.scoreboard import get_scoreboard_stats, get_pnl_timeseries
+from agents.connectors.whale_tracker import WHALE_CACHE_FILE
 
 DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "").strip()
 _INDEX_HTML = (Path(__file__).parent / "dashboard_static" / "index.html").read_bytes()
@@ -32,6 +33,14 @@ def _load_trade_history() -> list:
             return json.load(f)
     except Exception:
         return []
+
+
+def _load_whale_cache() -> dict:
+    try:
+        with open(WHALE_CACHE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"last_updated": None, "leaderboards": {}, "traders": [], "signals": []}
 
 
 def _build_stats() -> dict:
@@ -48,6 +57,7 @@ def _build_stats() -> dict:
         print(f"  [Dashboard] positions fetch failed: {e}")
 
     history = sorted(_load_trade_history(), key=lambda t: t.get("timestamp", ""), reverse=True)
+    whale_cache = _load_whale_cache()
 
     return {
         "balance": balance,
@@ -65,6 +75,10 @@ def _build_stats() -> dict:
         "scoreboard": get_scoreboard_stats(),
         "trade_stats": get_stats(),
         "recent_trades": history[:50],
+        "pnl_history": get_pnl_timeseries(),
+        "whale_last_updated": whale_cache.get("last_updated"),
+        "whale_leaderboards": whale_cache.get("leaderboards", {}),
+        "whale_traders": whale_cache.get("traders", []),
     }
 
 
