@@ -43,8 +43,10 @@ MIN_WHALE_VOLUME = 1_000.0
 # Minimum current position value to count as meaningful smart-money signal
 MIN_POSITION_VALUE = 50.0
 
-# Price drift cap — skip if price already moved >40% from whale's avg entry
-MAX_PRICE_DRIFT = 0.40
+# Price drift cap — skip if price already moved >20% from whale's avg entry
+# (tightened from 40% now that whale consensus is the bot's sole trade signal —
+# only trade signals that are still close to the whales' actual entry price)
+MAX_PRICE_DRIFT = 0.20
 
 # Consensus threshold — require this many independent whales on the same side
 MIN_WHALES_AGREE = 2
