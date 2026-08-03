@@ -34,8 +34,8 @@ endpoints, plus a Discord webhook for notifications.
 ## Current Architecture — pure leaderboard-following, zero risk management (as of 2026-08-03)
 The bot has no opinion of its own about any market. It watches what the top leaderboard
 traders are doing and copies consensus moves, full stop. There is no AI, no market scan, no
-signal filtering beyond "did enough whales agree," no stop-loss, no take-profit, no daily
-caps — the only guardrails are the five rules listed below.
+stop-loss, no take-profit, no daily caps — the only guardrails are the six rules listed below,
+including a signal-timing filter (rule 6) on top of the "did enough whales agree" consensus check.
 
 `Trader.one_best_trade()` runs every 15 minutes:
 
@@ -45,10 +45,14 @@ caps — the only guardrails are the five rules listed below.
    both boxes in full every cycle (leaderboard = each whale's record for that window, e.g. weekly
    = 7-day profit; signals = the positions found)
 2. **Consensus signal** — a `(market, side)` becomes a candidate signal once `MIN_WHALES_AGREE`
-   (2+, in `whale_tracker.py`) independent whales hold it. Nothing else gates a signal — no price
-   drift cap, no minimum whale count beyond 2, no filtering by market category or liquidity
+   (2+, in `whale_tracker.py`) independent whales hold it. Nothing else gates a signal at this
+   stage — no price drift cap, no minimum whale count beyond 2, no filtering by market category
+   or liquidity. Each signal also carries `is_today` — was any whale in it first observed today
+   (UTC)? — computed from `first_seen`, which is tracked per (whale, market, side) in
+   `whale_positions_state.json` and persists across cycles (unlike `is_fresh`, which is only
+   true the exact cycle a whale is first noticed)
 3. **Signal selection** — signals are pre-sorted (fresh first, then whale count, then combined
-   $ volume/profit); the bot walks the list and picks the first one that clears the two rules below
+   $ volume/profit); the bot walks the list and picks the first one that clears rules 4-6 below
 4. **Sizing** — flat `BET_FRACTION` (25%) of current balance, every single trade. No scaling by
    signal strength, whale count, or conviction of any kind
 5. **Order executor** — buys the exact token the whales hold (no YES/NO inference needed — the
@@ -58,7 +62,7 @@ The bot **never sells**. Once a position is opened it is held until Polymarket r
 market on its own — no stop-loss, no take-profit, no manual exit under any circumstance,
 regardless of how far the position moves against it.
 
-## The only 5 rules the bot follows (all in `trade.py`)
+## The only 6 rules the bot follows (all in `trade.py`)
 1. `BET_FRACTION = 0.25` — bet exactly 25% of current account balance on every trade
 2. No take-profit, no stop-loss, no cash-out — a position is held to resolution no matter what
 3. No daily loss limit, no daily spend cap — the bot will keep betting 25% of whatever balance
@@ -67,10 +71,19 @@ regardless of how far the position moves against it.
    given side of a given market, a repeat signal for that same (market, side) is skipped
 5. **Never bet the opposite outcome of a market already bet on** — if the bot holds YES on a
    market, a consensus signal for NO on that same market is skipped (and vice versa)
+6. **Today-only, unless overwhelming consensus** — a signal is only eligible if `is_today` is
+   true (some whale in it was first observed today, UTC), *unless* `whale_count >=
+   HIGH_CONSENSUS_WHALES` (5, in `trade.py`), in which case it's eligible regardless of when it
+   was first seen. This lets the bot skip stale/ongoing whale positions by default (avoiding
+   markets whales have been quietly sitting in for weeks) while still catching genuinely strong,
+   overwhelming consensus on a longer-running position — e.g. 5+ independent whales already
+   positioned ahead of a later-resolving event
 
 Rules 4 and 5 are checked against both the live Polymarket positions API and a local
 persistent journal (`trader_trade_history.json`, see below) — the journal exists purely as a
 redundant check in case the positions API hasn't caught up yet in the seconds right after a fill.
+Rule 6 is a signal-timing/eligibility filter, not risk management — it doesn't cap losses, it
+just changes which signals are considered at all.
 
 `ABSOLUTE_MIN_TRADE = $1` also exists, but it isn't a risk rule — it's Polymarket's own order
 minimum. If 25% of balance is below $1, the bot bumps up to $1 (if the balance can cover it) or
@@ -80,7 +93,8 @@ skips (if it can't). This is an exchange constraint, not a choice.
 no `DAILY_LOSS_FRACTION`, no `TRADE_COOLDOWN_MINUTES`, no keyword correlation filter, no price
 drift cap on signals, no scaled position sizing, no `maintain_positions()` / stop-loss / take-
 profit of any kind. Do not resurrect any of it without an explicit new instruction — the whole
-point of this iteration was to strip every rule down to the five above.
+point of this iteration was to strip every risk-management rule down to rules 1-5 above (rule 6,
+added later, is a signal-timing filter, not risk management — see note above).
 
 ---
 
@@ -104,7 +118,11 @@ refers to remains open (once a market resolves it can't be traded again anyway, 
 are harmless dead weight, not a correctness risk).
 
 `whale_positions_state.json` persists each whale's positions between cycles so the bot can tell
-a freshly-opened whale position (this cycle) from one they've held for a while.
+a freshly-opened whale position (this cycle) from one they've held for a while — via `first_seen`
+per (whale, market, side), which also backs rule 6's `is_today` check (first_seen date == today,
+UTC). Note `first_seen` is bot-observation-relative, not the whale's actual open timestamp: if
+the bot was offline when a position first appeared, `first_seen` reflects whenever the bot next
+scanned it, not when the whale actually opened it.
 
 ---
 
@@ -162,6 +180,25 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   all close it, Enter on a keyboard-focused row opens it too, and the no-cached-positions trader
   renders the plain empty state instead of the old table row it would have been silently missing
   from before.
+- [x] **Task #27** — Added rule 6: signals are now only eligible if `is_today` (some whale in
+  the bucket was first observed today, UTC) — *unless* `whale_count >= HIGH_CONSENSUS_WHALES`
+  (5, in `trade.py`), which makes an older/ongoing signal eligible regardless of timing. Confirmed
+  via clarifying questions with the user: "today" is based on the bot's existing `first_seen`
+  tracking (not the whale's literal on-chain open time, which Polymarket's positions API doesn't
+  expose — and not leaderboard-window membership, a less direct proxy), and the override threshold
+  is 5+ whales. `whale_tracker.py`'s `get_whale_signals()` now computes `is_today` per signal
+  (`earliest_seen[:10] == now[:10]`, i.e. same UTC calendar date) alongside the existing `is_fresh`
+  — the two are distinct: `is_fresh` is only true the exact cycle a whale is first noticed,
+  `is_today` stays true for the rest of that UTC day. `trade.py`'s eligibility loop (`one_best_
+  trade()`) gained a third filter alongside the two dedup rules; the "no eligible signal" log line
+  now reports how many were skipped for this reason specifically, since the old generic message
+  ("already bet on every consensus market this cycle") would otherwise be misleading when the
+  real cause is staleness rather than a dedup hit. Verified with two scripted `unittest.mock`
+  scenarios: a stale (not-today) signal with `whale_count=4` correctly skipped while a stale
+  signal with `whale_count=5` in the same batch was correctly picked (override), and a fresh
+  (`is_today=True`) signal with only `whale_count=2` was still eligible on its own (default path
+  unaffected) — plus a third run confirming the "N skipped as not-today" log line fires when
+  every signal in a cycle fails the filter.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
