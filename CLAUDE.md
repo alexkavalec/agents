@@ -219,6 +219,15 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   count, since that's about the scale of a whale's bet, not "how much did I trade." Verified with
   a mocked-data server + headless Chromium: confirmed `0.55` renders as `55c`, `0.555` as `55.5c`,
   and the Traded column shows the dollar amount (`$275.00`) instead of a raw share count.
+- [x] **Task #30** — Open Positions: added a "To Win" column (net profit if the position resolves
+  in our favor — `size * $1 payout - amount_traded`, computed in `dashboard.py`'s `_build_stats()`
+  from Polymarket's `size`/`initialValue` fields, not exposed as raw `size` since the user said
+  they don't care about share count) and color-coded the Value column by P&L: green when
+  `current_value` is meaningfully above `amount_traded` (winning), red when meaningfully below
+  (losing), grey/muted when within a cent of it (breakeven) — new `pnlClass()` helper and
+  `.val-pos`/`.val-neg`/`.val-even` CSS classes in `index.html`. Verified with a mocked-data
+  server + headless Chromium across all three states (winning/losing/breakeven), checking both
+  the rendered CSS class and the actual computed text color on each Value cell.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
