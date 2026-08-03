@@ -53,6 +53,8 @@ Fill in `.env`:
 - `POLYGON_FUNDER_ADDRESS` / `POLYGON_RPC_URL` — optional
 - `DISCORD_WEBHOOK_URL` — optional, notifications for fills and FOK kills
 - `DASHBOARD_TOKEN` — optional but recommended, protects the stats dashboard (see below)
+- `DATA_DIR` — optional but recommended on Railway, points state files at a mounted Volume so
+  trade history survives redeploys (see Deployment below)
 
 Fund the wallet with USDC on Polygon, then run:
 
@@ -86,6 +88,13 @@ Runs 24/7 on [Railway](https://railway.app) with the same start command above. T
 installs `requirements.txt`; the actual run command is configured as the Railway service's start
 command, not baked into the image. Enable "Public Networking" on the Railway service to get a
 URL for the dashboard.
+
+**Persisting state across deploys:** Railway's container filesystem is ephemeral by default —
+every redeploy resets trade history, the dedup journal, and whale tracking unless you attach a
+Volume:
+1. Railway dashboard → your service → **Settings → Volumes** → **Add Volume**, mount it at e.g. `/data`
+2. Service → **Variables** → add `DATA_DIR=/data`
+3. Redeploy — state now survives future deploys
 
 ## License
 

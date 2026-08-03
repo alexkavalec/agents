@@ -107,7 +107,11 @@ It is NOT read by the running trading bot. It's documentation for the developer.
 
 ### 2. Runtime memory (shared agent state)
 Running agents share state via files or in-memory data structures — not via CLAUDE.md.
-`trader_trade_history.json` (project root) is a flat, ever-growing list of every trade the bot
+All state file paths below live under `DATA_DIR` (default `.`, the working directory) — see
+Task #35 in the changelog and "Persistent state" under Railway Notes for why this matters and
+how to actually make it survive redeploys (it doesn't, by default).
+
+`trader_trade_history.json` is a flat, ever-growing list of every trade the bot
 has ever filled — used only to back the two dedup rules above:
 ```json
 [
@@ -318,6 +322,25 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   frontend correctly requests a distinct window per tab click, updates the active-tab styling, and
   re-renders the chart with that window's data. Flagged to the user to confirm it actually returns
   data once deployed to Railway.
+- [x] **Task #35** — Fixed state getting wiped on every Railway deploy. Root cause: all four state
+  files (`trade_history.json`, `trader_trade_history.json`, `whale_positions_state.json`,
+  `whale_scan_cache.json`) were written to hardcoded, unconditional relative paths — Railway's
+  container filesystem is ephemeral by default, so every redeploy (every PR merge) silently reset
+  them to empty. An earlier version of this doc claimed state "persists on Railway volume," which
+  was aspirational and never actually true — no volume had ever been attached. Every state-file
+  path now resolves via a `DATA_DIR` env var (`os.path.join(DATA_DIR, "...")`, defaulting to `"."`
+  — unchanged/ephemeral if unset, so this is a no-op until the user actually attaches a volume).
+  Also removed a latent duplicate-source-of-truth bug found while fixing this: `scoreboard.py` had
+  its own copy of `TRADE_HISTORY_FILE = "trade_history.json"` instead of importing it from
+  `trade_log.py` — harmless while both were hardcoded to the same literal, but would have silently
+  desynced the moment one of the two paths incorporated `DATA_DIR` and the other didn't. Fixing
+  the code is only half the job — a Railway Volume still has to be created and mounted, and
+  `DATA_DIR` set to that mount path, manually in the Railway dashboard; documented the exact steps
+  in CLAUDE.md since this can't be done from the repo. Verified locally: with `DATA_DIR` set to a
+  scratch directory, `trade_log.TRADE_HISTORY_FILE` and `scoreboard.TRADE_HISTORY_FILE` resolve to
+  the identical path (confirming the import fixed the desync risk) and `log_trade()` actually
+  writes there; with `DATA_DIR` unset, every path resolves exactly as before (`os.path.join("",
+  "x") == "x"`), confirming zero behavior change for anyone who hasn't configured a volume yet.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
@@ -401,12 +424,40 @@ network is **None** (all blocked). To allow Polymarket API access:
 - **Update the Railway start command to `--interval-minutes 15`** — this repo change updated
   `cli.py`'s default, but Railway's configured start command overrides the default and needs to
   be updated manually in the Railway dashboard.
-- Container restarts don't lose state: `trader_trade_history.json` persists on Railway volume
 - Logs are collected by Railway's log aggregator — rapid-fire `print()` calls get reordered
   - **Fix**: batch entire log sections into single `print("\n".join([...]))` call
 - **Stats dashboard**: enable "Public Networking" on the service to get a URL for it — Railway
   injects `$PORT`, which `dashboard.py` binds to automatically. Set `DASHBOARD_TOKEN` before
   doing this, or your balance/positions/trade history are readable by anyone with the URL.
+
+### Persistent state (Task #35)
+**Railway's container filesystem is ephemeral by default** — every redeploy (including every
+PR merge, since that's what triggers a new deploy) starts from a fresh container, so any state
+file written to the working directory (the old, unconditional `"trade_history.json"` etc. paths)
+was silently wiped on every single deploy. This was a real bug, not a hypothetical: an earlier
+version of this doc claimed state "persists on Railway volume," which was aspirational and never
+actually true — no volume was ever attached, so trade history, the dedup journal, and whale
+freshness tracking all reset to empty on every merge.
+
+Fixed in two parts:
+1. **Code**: every state file's path is now built from a `DATA_DIR` env var (default `"."`,
+   i.e. unchanged/ephemeral behavior if unset) — `trade_log.TRADE_HISTORY_FILE`, `trade.
+   STATE_FILE`, `whale_tracker.WHALE_STATE_FILE`, `whale_tracker.WHALE_CACHE_FILE` all resolve
+   via `os.path.join(DATA_DIR, "...")`. `scoreboard.py` now imports `TRADE_HISTORY_FILE` from
+   `trade_log.py` instead of redefining it (an earlier duplicate definition risked silently
+   drifting out of sync with the real path).
+2. **Railway config — you have to do this manually, it can't be done from code**:
+   1. Railway dashboard → your service → **Settings → Volumes** → **Add Volume**
+   2. Set a mount path, e.g. `/data` (any path works, just be consistent with step 3)
+   3. Service → **Variables** → add `DATA_DIR=/data`
+   4. Redeploy. From then on, every state file lives on the volume and survives future
+      redeploys — only the *first* deploy after attaching the volume starts from empty (nothing
+      to migrate; prior history was already being wiped every deploy anyway, so there's no old
+      data to carry forward).
+
+Without step 2, the code change alone does nothing — `DATA_DIR` stays unset, defaults to `"."`,
+and behavior is unchanged (still ephemeral). This is deliberate: no volume should mean no
+silent behavior change for anyone who hasn't set one up yet.
 
 ---
 

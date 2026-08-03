@@ -17,6 +17,7 @@ All endpoints are public — no API key required.
   user-pnl-api.polymarket.com/user-pnl                — a trader's own P&L-over-time chart
 """
 
+import os
 import json
 import requests
 from collections import defaultdict
@@ -29,8 +30,11 @@ PM_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html",
 }
-WHALE_STATE_FILE = "whale_positions_state.json"
-WHALE_CACHE_FILE = "whale_scan_cache.json"  # leaderboards + per-trader positions, for the dashboard
+# DATA_DIR should point at a mounted Railway Volume so this survives redeploys —
+# see CLAUDE.md's "Persistent state" notes. Defaults to the working directory.
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+WHALE_STATE_FILE = os.path.join(DATA_DIR, "whale_positions_state.json")
+WHALE_CACHE_FILE = os.path.join(DATA_DIR, "whale_scan_cache.json")  # leaderboards + per-trader positions, for the dashboard
 
 # Minimum current position value to count as meaningful smart-money signal
 # (not a risk rule — pure data hygiene, filters out dust positions that would

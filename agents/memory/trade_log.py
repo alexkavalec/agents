@@ -1,7 +1,12 @@
 import json
+import os
 import datetime
 
-TRADE_HISTORY_FILE = "trade_history.json"
+# DATA_DIR lets state survive Railway redeploys — set it to a mounted Volume path
+# (e.g. /data) in the service's env vars. Defaults to the working directory, which
+# on a container platform without a volume attached is wiped on every deploy.
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+TRADE_HISTORY_FILE = os.path.join(DATA_DIR, "trade_history.json")
 
 
 def _load(filepath: str) -> list:
