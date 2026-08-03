@@ -17,7 +17,6 @@ All endpoints are public — no API key required.
 """
 
 import json
-import re
 import requests
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -100,24 +99,46 @@ class WhaleTracker:
     def _scrape_leaderboard_page(self, window: str, n: int) -> list:
         """
         Scrape top-n traders from polymarket.com/leaderboard/overall/{window}/profit.
-        The page embeds two JSON arrays: index 0 = by volume, index 1 = by profit.
-        Returns trader dicts with address, volume (= PnL), name, rank, source.
 
-        window: 'daily' | 'weekly' | 'all'
+        The page embeds a React Query "dehydrated state" cache inside a Next.js RSC
+        flight chunk, as an escaped JSON string (literal `\"` two-char sequences, not
+        real quote characters) — not a plain embedded array like the page used to
+        serve. Each cached query in that array looks like:
+          {"state":{"data":[...trader entries...]},"queryKey":["/leaderboard","profit",...]}
+        Note "state" comes BEFORE "queryKey" in the object, so we locate the
+        "profit"-sorted queryKey marker and search *backwards* for its own
+        preceding "data" array (searching forward would find the next query
+        object's data instead — e.g. the unrelated "biggestWins" widget).
+
+        window: 'today' | 'weekly' | 'monthly' | 'all'
         """
         url = f"{PM_WEB}/leaderboard/overall/{window}/profit"
         try:
             r = requests.get(url, headers=PM_HEADERS, timeout=15)
             if r.status_code != 200:
                 return []
-            # Two JSON arrays embedded in SSR HTML; index 1 is sorted by profit
-            arrays = re.findall(
-                r'\[(\{"rank"[^\[\]]{20,}"proxyWallet"[^\[\]]*(?:\{[^\{\}]*\}[^\[\]]*)*)\]',
-                r.text,
-            )
-            if len(arrays) < 2:
+            text = r.text
+            key_marker = r'\"queryKey\":[\"/leaderboard\",\"profit\"'
+            key_idx = text.find(key_marker)
+            if key_idx == -1:
                 return []
-            entries = json.loads("[" + arrays[1] + "]")
+            data_marker = r'\"data\":['
+            data_idx = text.rfind(data_marker, 0, key_idx)
+            if data_idx == -1:
+                return []
+            arr_start = data_idx + len(data_marker) - 1
+            depth = 0
+            i = arr_start
+            while i < len(text):
+                if text[i] == "[":
+                    depth += 1
+                elif text[i] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            raw = text[arr_start:i + 1].replace(r'\"', '"')
+            entries = json.loads(raw)
         except Exception:
             return []
 
