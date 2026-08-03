@@ -309,10 +309,16 @@ class WhaleTracker:
                 buckets[key]["whale_volumes"].append(trader["volume"])
                 buckets[key]["whale_addresses"].append(trader["address"])
 
+                # amount_traded (cost basis) and to_win (net profit if this resolves in
+                # their favor: size * $1 payout - cost) — same fields the dashboard shows
+                # for the bot's own Open Positions, now surfaced per whale position too
+                amount_traded = float(pos.get("initialValue", 0) or 0)
                 trader_positions.append({
                     "title": title, "side": side,
                     "avg_price": round(avg_price, 4), "cur_price": round(cur_price, 4),
                     "size": round(size, 2), "value": round(cur_val, 2),
+                    "amount_traded": round(amount_traded, 2),
+                    "to_win": round(size - amount_traded, 2),
                 })
 
             if trader_positions:

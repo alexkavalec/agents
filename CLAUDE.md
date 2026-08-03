@@ -228,6 +228,19 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   `.val-pos`/`.val-neg`/`.val-even` CSS classes in `index.html`. Verified with a mocked-data
   server + headless Chromium across all three states (winning/losing/breakeven), checking both
   the rendered CSS class and the actual computed text color on each Value cell.
+- [x] **Task #31** — Extended Task #30's "To Win" column + P&L color-coding from the bot's own
+  Open Positions to every whale's positions table in the trader detail modal (opened by clicking
+  a leaderboard entry). `whale_tracker.py`'s `get_whale_signals()` now computes `amount_traded`
+  (cost basis, from Polymarket's `initialValue`) and `to_win` (`size - amount_traded`) per whale
+  position, mirroring `dashboard.py`'s bot-position fields exactly. `index.html`'s modal table
+  reuses the same `pnlClass()` helper on its Value column and gained the same "To Win" column
+  (kept "Size" here too, unlike the bot's own table — whale position size is informative about
+  the scale of their bet, not something the user said they don't care about). Also confirmed the
+  modal's "Weekly P&L" stat (a trader's weekly record, added back in Task #25) is already
+  displayed prominently at the top of the modal — no change needed there, just verified it's
+  showing correctly per the user's request to "see" it. Verified with a mocked-data server +
+  headless Chromium: a trader with a winning/losing/breakeven position each showed the correct
+  To Win amount and Value color (green/red/grey), and the Weekly P&L stat rendered correctly.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
