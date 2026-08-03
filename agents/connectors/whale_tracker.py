@@ -14,6 +14,7 @@ the dashboard can display them without re-scraping on every page load.
 All endpoints are public — no API key required.
   polymarket.com/leaderboard/overall/{window}/profit — SSR leaderboard pages (scraped)
   data-api.polymarket.com/positions                  — open positions for a given address
+  user-pnl-api.polymarket.com/user-pnl                — a trader's own P&L-over-time chart
 """
 
 import json
@@ -21,8 +22,9 @@ import requests
 from collections import defaultdict
 from datetime import datetime, timezone
 
-DATA_API   = "https://data-api.polymarket.com"
-PM_WEB     = "https://polymarket.com"
+DATA_API      = "https://data-api.polymarket.com"
+PM_WEB        = "https://polymarket.com"
+USER_PNL_API  = "https://user-pnl-api.polymarket.com"
 PM_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html",
@@ -217,53 +219,42 @@ class WhaleTracker:
 
     def get_trader_pnl_history(self, address: str, window: str = "1W") -> list:
         """
-        Scrape a trader's own P&L-over-time chart data from their Polymarket profile
-        page (polymarket.com/profile/{address}) — same escaped-JSON dehydrated-state
-        format as the leaderboard page (see _scrape_leaderboard_page), just under a
-        different queryKey ("portfolio-pnl"). window: '1D' | '1W' | '1M' | 'ALL'.
+        Fetch a trader's own P&L-over-time chart data from Polymarket's public
+        user-pnl-api — the exact endpoint their own profile page's chart component
+        calls (reverse-engineered from their production JS bundle: the queryFn for
+        the "portfolio-pnl" query hits `{USER_PNL_URL}/user-pnl?user_address=...
+        &interval=...&fidelity=...`, where USER_PNL_URL defaults to
+        https://user-pnl-api.polymarket.com). No API key required, same as every
+        other endpoint here. window: '1D' | '1W' | '1M' | '1Y' | 'YTD' | 'ALL'.
 
         Note: Polymarket does not expose a win/loss/push record for other traders
-        anywhere (confirmed by inspecting every query embedded on the profile page) —
-        this is the closest real substitute: their actual $ P&L over time.
+        anywhere (confirmed by inspecting every query on the profile page and every
+        field in the positions API) — this is the closest real substitute: their
+        actual $ P&L over time.
 
         Returns [{"date": ISO8601, "cumulative_pnl": float}, ...], oldest first — same
         shape as scoreboard.get_pnl_timeseries() so the dashboard can chart either with
         the same renderer. Called on-demand per dashboard request (when a trader's modal
-        is opened), not during the bot's own scan cycle — a full profile-page fetch per
-        tracked whale every 15 minutes would be a lot of unnecessary bandwidth for data
-        nobody's looking at yet.
+        is opened, or its period tabs clicked), not during the bot's own scan cycle —
+        nobody's looking at most traders' charts most of the time.
         """
-        if window not in ("1D", "1W", "1M", "ALL"):
+        if window not in ("1D", "1W", "1M", "1Y", "YTD", "ALL"):
             window = "1W"
+        # Fidelity (data-point spacing) per period — matches Polymarket's own chart
+        # component; anything not in this map (1Y/YTD/ALL) uses daily granularity.
+        fidelity = {"1D": "1h", "1W": "3h", "1M": "18h"}.get(window, "1d")
         try:
-            r = requests.get(f"{PM_WEB}/profile/{address}", headers=PM_HEADERS, timeout=15)
+            r = requests.get(
+                f"{USER_PNL_API}/user-pnl",
+                params={"user_address": address, "interval": window.lower(), "fidelity": fidelity},
+                headers={"User-Agent": "PolymarketTradingBot/1.0"},
+                timeout=10,
+            )
             if r.status_code != 200:
                 return []
-            text = r.text
-            key_marker = rf'\"queryKey\":[\"portfolio-pnl\",\"{address}\",\"{window}\"'
-            key_idx = text.find(key_marker)
-            if key_idx == -1:
+            points = r.json()
+            if not isinstance(points, list):
                 return []
-            data_marker = r'\"data\":'
-            data_idx = text.rfind(data_marker, 0, key_idx)
-            if data_idx == -1:
-                return []
-            i = data_idx + len(data_marker)
-            while text[i] in " \\":
-                i += 1
-            opener = text[i]
-            closer = "}" if opener == "{" else "]"
-            depth, j = 0, i
-            while j < len(text):
-                if text[j] == opener:
-                    depth += 1
-                elif text[j] == closer:
-                    depth -= 1
-                    if depth == 0:
-                        break
-                j += 1
-            raw = text[i:j + 1].replace(r'\"', '"')
-            points = json.loads(raw)
         except Exception:
             return []
 
