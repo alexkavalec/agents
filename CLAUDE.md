@@ -241,6 +241,26 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   showing correctly per the user's request to "see" it. Verified with a mocked-data server +
   headless Chromium: a trader with a winning/losing/breakeven position each showed the correct
   To Win amount and Value color (green/red/grey), and the Weekly P&L stat rendered correctly.
+- [x] **Task #32** — Trader modal polish, from a real production screenshot (swisstony, 222
+  positions): (1) the modal's top stats now match the main dashboard's own card style — reused
+  the `.cards`/`.card` classes instead of the bespoke `.modal-stats`/`.modal-stat` ones, and
+  expanded from a single "Weekly P&L" figure to one card per leaderboard window the trader is
+  actually on (Today/Weekly/Monthly/All-Time, each pos/neg colored) plus Open Positions and Total
+  Value — `whale_tracker.py`'s `get_whale_signals()` now exposes the full `window_profit` dict per
+  trader instead of just `weekly_pnl`, replacing the now-redundant `windows` list (its badge
+  rendering — `windowBadges()`/`.window-badge` — removed as dead code along with it); (2) the
+  modal's positions table drops "Size" (raw share count) for "Traded" ($ cost basis, same
+  `amount_traded` field added in Task #31), matching the bot's own Open Positions table exactly;
+  (3) fixed a real overflow bug the screenshot exposed — the Side column showed long outcome
+  names (e.g. "James Duckworth", not just Yes/No, since sports/player-prop markets have real
+  player names as outcomes) that weren't allowed to wrap, forcing the row wide and triggering a
+  left-right scrollbar the user didn't want. Side now wraps like Market does; `.modal-box` widened
+  640px → 820px and the positions table's padding/font-size tightened to fit comfortably.
+  Verified with a mocked-data server + headless Chromium reproducing the screenshot's exact shape
+  (long player-name sides, 4 leaderboard windows including a negative all-time figure): confirmed
+  `scrollWidth === clientWidth` on the table wrapper (no horizontal scrollbar) at 1300/1024/900/768px
+  widths — true phone widths (~390px) still need the scrollbar, which is an acceptable, unavoidable
+  fallback for 7 dense numeric columns on a screen that narrow, not a regression from before.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---

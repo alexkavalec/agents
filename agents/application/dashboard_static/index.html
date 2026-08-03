@@ -71,7 +71,11 @@
   #trades-table td:nth-child(2) { white-space: normal; min-width: 180px; }
   #trades-table th:nth-child(4), #trades-table td:nth-child(4),
   #trades-table th:nth-child(7), #trades-table td:nth-child(7) { text-align: right; font-variant-numeric: tabular-nums; }
-  #modal-positions-table td:nth-child(1) { white-space: normal; min-width: 160px; }
+  #modal-positions-table th, #modal-positions-table td { padding: 8px 8px; font-size: 12.5px; }
+  #modal-positions-table th:first-child, #modal-positions-table td:first-child { padding-left: 0; }
+  #modal-positions-table th:last-child, #modal-positions-table td:last-child { padding-right: 0; }
+  #modal-positions-table td:nth-child(1) { white-space: normal; min-width: 140px; }
+  #modal-positions-table td:nth-child(2) { white-space: normal; min-width: 80px; }
   #modal-positions-table th:nth-child(n+3), #modal-positions-table td:nth-child(n+3) { text-align: right; font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: none; }
   tbody tr { transition: background-color 120ms ease; }
@@ -115,25 +119,16 @@
   .modal-backdrop.open { display: flex; }
   .modal-box {
     background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-    max-width: 640px; width: 100%; max-height: 82vh; overflow-y: auto; padding: 22px 24px;
+    max-width: 820px; width: 100%; max-height: 82vh; overflow-y: auto; padding: 22px 24px;
     box-shadow: 0 20px 60px rgba(0,0,0,0.5);
   }
   .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
   .modal-title { font-size: 16px; font-weight: 650; }
-  .modal-sub { margin-top: 6px; }
   .modal-close {
     background: transparent; border: none; color: var(--muted); font-size: 20px; line-height: 1;
     cursor: pointer; padding: 4px 8px; border-radius: 6px; flex-shrink: 0;
   }
   .modal-close:hover { background: rgba(255,255,255,0.08); color: var(--text); }
-  .modal-stats { display: flex; gap: 24px; flex-wrap: wrap; margin: 16px 0 18px; }
-  .modal-stat .label { color: var(--muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
-  .modal-stat .value { font-size: 17px; font-weight: 650; margin-top: 3px; font-variant-numeric: tabular-nums; }
-
-  .window-badge {
-    display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
-    background: rgba(124,140,255,0.14); color: var(--accent); margin: 1px 3px 1px 0; white-space: nowrap;
-  }
 
   #pnl-chart-wrap { position: relative; }
   #pnl-tooltip-html {
@@ -214,17 +209,14 @@
 <div class="modal-backdrop" id="trader-modal">
   <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-head">
-      <div>
-        <div class="modal-title" id="modal-title"></div>
-        <div class="modal-sub" id="modal-sub"></div>
-      </div>
+      <div class="modal-title" id="modal-title"></div>
       <button class="modal-close" id="modal-close" type="button" aria-label="Close">&times;</button>
     </div>
-    <div class="modal-stats" id="modal-stats"></div>
+    <div class="cards" id="modal-stats" style="margin: 16px 0 18px;"></div>
     <div class="scroll">
       <table id="modal-positions-table">
         <thead>
-          <tr><th>Market</th><th>Side</th><th>Size</th><th>To Win</th><th>Avg</th><th>Now</th><th>Value</th></tr>
+          <tr><th>Market</th><th>Side</th><th>Traded</th><th>To Win</th><th>Avg</th><th>Now</th><th>Value</th></tr>
         </thead>
         <tbody id="modal-positions-body"></tbody>
       </table>
@@ -295,12 +287,10 @@ function escapeHtml(s) {
 }
 const STATUS_LABELS = { filled: "Filled", fok_killed: "FOK killed", untradeable: "Untradeable", error: "Error" };
 const OUTCOME_LABELS = { win: "Win", loss: "Loss", push: "Push", pending: "Pending", "n/a": "—" };
-const WINDOW_LABELS = { today: "Today", weekly: "Weekly", monthly: "Monthly", all_time: "All-Time" };
+const WINDOW_LABELS = { today: "Today (Unrealized)", weekly: "Weekly P&L", monthly: "Monthly P&L", all_time: "All-Time P&L" };
+const WINDOW_ORDER = ["today", "weekly", "monthly", "all_time"];
 function statusLabel(s) { return STATUS_LABELS[s] || s || "—"; }
 function outcomeLabel(s) { return OUTCOME_LABELS[s] || s || "—"; }
-function windowBadges(windows) {
-  return (windows || []).map(w => `<span class="window-badge">${escapeHtml(WINDOW_LABELS[w] || w)}</span>`).join("");
-}
 
 // ---- Profit-over-time line chart (inline SVG, no charting library) ----
 function renderPnlChart(points) {
@@ -443,19 +433,24 @@ function renderLeaderboards(leaderboards) {
 function openTraderModal(address) {
   if (!address) return;
   const traders = (lastData && lastData.whale_traders) || [];
-  const t = traders.find(x => x.address === address) || { address, name: "", windows: [], weekly_pnl: null, positions: [] };
+  const t = traders.find(x => x.address === address) || { address, name: "", window_profit: {}, positions: [] };
   const positions = t.positions || [];
   const totalValue = positions.reduce((sum, p) => sum + (p.value || 0), 0);
+  const windowProfit = t.window_profit || {};
 
   document.getElementById("modal-title").textContent = displayName(t);
-  document.getElementById("modal-sub").innerHTML = windowBadges(t.windows);
-  document.getElementById("modal-stats").innerHTML = `
-    <div class="modal-stat">
-      <div class="label">Weekly P&amp;L</div>
-      <div class="value ${t.weekly_pnl === null || t.weekly_pnl === undefined ? "" : (t.weekly_pnl >= 0 ? "pos" : "neg")}">${fmtUsd(t.weekly_pnl)}</div>
-    </div>
-    <div class="modal-stat"><div class="label">Open Positions</div><div class="value">${positions.length}</div></div>
-    <div class="modal-stat"><div class="label">Total Value</div><div class="value">${fmtUsd(totalValue)}</div></div>
+
+  const profitCards = WINDOW_ORDER
+    .filter(w => windowProfit[w] !== undefined && windowProfit[w] !== null)
+    .map(w => `
+      <div class="card">
+        <div class="label">${escapeHtml(WINDOW_LABELS[w])}</div>
+        <div class="value ${windowProfit[w] >= 0 ? "pos" : "neg"}">${fmtUsd(windowProfit[w])}</div>
+      </div>
+    `);
+  document.getElementById("modal-stats").innerHTML = profitCards.join("") + `
+    <div class="card"><div class="label">Open Positions</div><div class="value">${positions.length}</div></div>
+    <div class="card"><div class="label">Total Value</div><div class="value">${fmtUsd(totalValue)}</div></div>
   `;
 
   document.getElementById("modal-positions-empty").style.display = positions.length ? "none" : "block";
@@ -465,7 +460,7 @@ function openTraderModal(address) {
       <tr>
         <td>${escapeHtml(p.title || "")}</td>
         <td class="${sideClass(p.side)}">${escapeHtml(p.side || "")}</td>
-        <td>${p.size ?? "—"}</td>
+        <td>${fmtUsd(p.amount_traded)}</td>
         <td>${fmtUsd(p.to_win)}</td>
         <td>${fmtPrice(p.avg_price)}</td>
         <td>${fmtPrice(p.cur_price)}</td>
