@@ -261,6 +261,41 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   `scrollWidth === clientWidth` on the table wrapper (no horizontal scrollbar) at 1300/1024/900/768px
   widths — true phone widths (~390px) still need the scrollbar, which is an acceptable, unavoidable
   fallback for 7 dense numeric columns on a screen that narrow, not a regression from before.
+- [x] **Task #33** — Trader modal: fixed overflowing stat-card numbers, added a per-trader P&L
+  chart. (1) The All-Time P&L card was showing a truncated number (`$22,892,345.` cut off
+  mid-digit) because `.card .value` had no overflow handling and the box is a fixed
+  `minmax(140px, 1fr)` grid cell — switched the modal's window-profit/total-value cards to
+  `fmtCompactUsd()` (`$22.9M` instead of the full figure) with a `title` attribute holding the
+  exact value on hover, and added `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`
+  to `.card .value` globally as a safety net against any future overflow. (2) **Investigated
+  "weekly record W-L-P" and confirmed it isn't available**: inspected every embedded React Query
+  on a trader's own Polymarket profile page (`polymarket.com/profile/{address}`, same dehydrated-
+  state format as the leaderboard page) — the only stats Polymarket computes for a trader are
+  `trades`/`largestWin`/`joinDate` (`user-stats` query) and a $ P&L-over-time series
+  (`portfolio-pnl` query, windows `1D`/`1W`/`1M`/`ALL`); no win/loss/push breakdown exists
+  anywhere, for anyone. Also confirmed the bot's own `/positions` endpoint can't be used to
+  reconstruct one: spot-checked a real wallet and found 500/500 "resolved" positions came back as
+  losses and zero wins — winning positions are redeemed and disappear from the API once claimed,
+  while worthless losing positions linger indefinitely as dust, making any position-based W/L
+  count structurally biased toward losses, not a real record. Given no honest W-L-P is available,
+  added the closest real substitute instead: a new `WhaleTracker.get_trader_pnl_history(address,
+  window)` (in `whale_tracker.py`) scrapes the trader's own `portfolio-pnl` query the same way
+  `_scrape_leaderboard_page()` scrapes the leaderboard, and a new `dashboard.py` endpoint
+  (`GET /api/trader-pnl?address=...&window=...`, address validated against `^0x[a-fA-F0-9]{40}$`)
+  serves it on demand. Deliberately **not** fetched during the bot's normal 15-minute scan cycle —
+  a full profile-page HTML fetch (~300KB) per tracked whale every cycle would be a lot of
+  unnecessary bandwidth for a chart nobody's looking at; instead the dashboard's `index.html`
+  fetches it lazily only when a trader's modal is actually opened (with a request-sequence guard
+  so a stale response can't overwrite a different trader's now-open modal), defaulting to the "1W"
+  window per the user's "weekly record" framing. `renderPnlChart()` was refactored to accept an
+  `opts` object (container/tooltip/empty element IDs, chart height) instead of hardcoded IDs, so
+  the same chart code renders both the main dashboard's chart and the modal's — necessary since
+  both can be mounted simultaneously and the SVG's internal element IDs would otherwise collide.
+  Verified live against Polymarket (not mocked) that `get_trader_pnl_history()` returns real data
+  for all 4 windows, then end-to-end with a mocked-data dashboard server + headless Chromium:
+  confirmed no stat card overflows anymore (`scrollWidth === clientWidth` on every card value),
+  the modal's chart renders and its hover crosshair/tooltip work independently of the main
+  dashboard's own (separate, unaffected) chart instance.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
@@ -281,6 +316,27 @@ disconnected. Do not resurrect either plan without an explicit new decision from
 - `sortBy` param: `pnl` works; `profitAndLoss` also accepted but returns same unrealized field
 - No API key required; `User-Agent` header helps avoid 403s
 - `/trades?limit=5000` fetches global trade feed; filtered by timestamp for daily/weekly active traders when leaderboard window param is non-functional
+
+### `/positions` win/loss bias (Task #33)
+Do not use `/positions` (even with the `redeemable` filter removed) to compute a trader's win/
+loss record — it's structurally biased toward losses. Winning positions get redeemed (claimed)
+and disappear from the API once claimed; losing positions are worthless dust nobody bothers to
+formally redeem, so they persist forever as `redeemable: true` entries with `cashPnl` equal to
+`-initialValue`. Spot-checked live: one real wallet returned 500/500 "resolved" positions as
+losses, zero wins. There is no reliable way to derive a win/loss/push record for an arbitrary
+trader from Polymarket's public API — confirmed by inspecting every embedded query on their own
+profile page (see below), none of which include one either.
+
+### `polymarket.com/profile/{address}` — per-trader P&L chart (Task #33)
+Same escaped-JSON dehydrated-state format as the leaderboard page (`\"data\":[...]` preceding a
+`\"queryKey\":[...]` marker — see `_scrape_leaderboard_page()`), just different query keys:
+- `["portfolio-pnl", address, window]` → `[{"t": unix_seconds, "p": cumulative_pnl}, ...]`,
+  `window` one of `"1D"`/`"1W"`/`"1M"`/`"ALL"`. This is what `get_trader_pnl_history()` scrapes.
+- `["user-stats", address]` → `{"trades": int, "largestWin": float, "views": int, "joinDate": iso}`
+  — no win/loss breakdown, just a trade count and single largest win.
+- Other query keys present but unused (no realized-P&L-per-market breakdown in any of them):
+  `/api/profile/marketsTraded`, `/api/profile/userData`, `/api/profile/volume`,
+  `"positions","value"`, `"profile-biggest-wins"`, `"profile","positions",...,"CURRENT","DESC"`.
 
 ### Inspect script
 `scripts/inspect_whale.py` — one-shot profiler for any Polymarket address:

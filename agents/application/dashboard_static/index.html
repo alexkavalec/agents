@@ -46,7 +46,10 @@
     padding: 16px 18px;
   }
   .card .label { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
-  .card .value { font-size: 23px; font-weight: 650; margin-top: 6px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .card .value {
+    font-size: 23px; font-weight: 650; margin-top: 6px; font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .value.pos { color: var(--green); }
   .value.neg { color: var(--red); }
   section { margin-bottom: 32px; }
@@ -131,13 +134,15 @@
   .modal-close:hover { background: rgba(255,255,255,0.08); color: var(--text); }
 
   #pnl-chart-wrap { position: relative; }
-  #pnl-tooltip-html {
+  .pnl-tooltip {
     position: absolute; pointer-events: none; background: #1c2130; border: 1px solid var(--border);
     border-radius: 8px; padding: 8px 11px; font-size: 12px; display: none; white-space: nowrap;
     transform: translate(-50%, -100%); margin-top: -10px; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    z-index: 5;
   }
-  #pnl-tooltip-html .t-date { color: var(--muted); font-size: 11px; }
-  #pnl-tooltip-html .t-val { font-weight: 650; font-variant-numeric: tabular-nums; font-size: 14px; margin: 2px 0; }
+  .pnl-tooltip .t-date { color: var(--muted); font-size: 11px; }
+  .pnl-tooltip .t-val { font-weight: 650; font-variant-numeric: tabular-nums; font-size: 14px; margin: 2px 0; }
+  #modal-pnl-wrap { position: relative; margin: 4px 0 18px; }
 
   @media (max-width: 480px) {
     body { padding: 20px 12px 56px; }
@@ -162,7 +167,7 @@
     <div class="panel">
       <div id="pnl-chart-wrap">
         <div id="pnl-chart"></div>
-        <div id="pnl-tooltip-html"></div>
+        <div id="pnl-tooltip-html" class="pnl-tooltip"></div>
       </div>
       <div class="empty" id="pnl-empty" style="display:none;">No resolved trades yet — the chart fills in as positions settle.</div>
     </div>
@@ -213,6 +218,13 @@
       <button class="modal-close" id="modal-close" type="button" aria-label="Close">&times;</button>
     </div>
     <div class="cards" id="modal-stats" style="margin: 16px 0 18px;"></div>
+    <div class="section-head" style="margin-bottom: 8px;"><h2>P&amp;L (past week)</h2></div>
+    <div id="modal-pnl-wrap">
+      <div id="modal-pnl-chart"></div>
+      <div id="modal-pnl-tooltip" class="pnl-tooltip"></div>
+    </div>
+    <div class="empty" id="modal-pnl-empty" style="display:none; margin-bottom: 18px;">No recent P&amp;L history.</div>
+    <div class="section-head" style="margin-bottom: 8px;"><h2>Open Positions</h2></div>
     <div class="scroll">
       <table id="modal-positions-table">
         <thead>
@@ -293,10 +305,21 @@ function statusLabel(s) { return STATUS_LABELS[s] || s || "—"; }
 function outcomeLabel(s) { return OUTCOME_LABELS[s] || s || "—"; }
 
 // ---- Profit-over-time line chart (inline SVG, no charting library) ----
-function renderPnlChart(points) {
-  const container = document.getElementById("pnl-chart");
-  const emptyEl = document.getElementById("pnl-empty");
-  const tooltip = document.getElementById("pnl-tooltip-html");
+// Reusable for both the main dashboard's own chart and the per-trader chart in the
+// modal — opts lets a second, simultaneously-mounted chart use distinct container/
+// element IDs (SVG child IDs would otherwise collide since getElementById only
+// finds the first match).
+function renderPnlChart(points, opts) {
+  opts = opts || {};
+  const idPrefix    = opts.idPrefix || "pnl";
+  const containerId = opts.containerId || "pnl-chart";
+  const emptyId     = opts.emptyId || "pnl-empty";
+  const tooltipId   = opts.tooltipId || "pnl-tooltip-html";
+  const chartHeight = opts.height || 220;
+
+  const container = document.getElementById(containerId);
+  const emptyEl = document.getElementById(emptyId);
+  const tooltip = document.getElementById(tooltipId);
 
   if (!points || points.length === 0) {
     container.innerHTML = "";
@@ -307,7 +330,7 @@ function renderPnlChart(points) {
   emptyEl.style.display = "none";
 
   const width = Math.max(280, container.clientWidth || 600);
-  const height = 220;
+  const height = chartHeight;
   const padL = 54, padR = 16, padT = 20, padB = 24;
   const plotW = width - padL - padR;
   const plotH = height - padT - padB;
@@ -333,24 +356,27 @@ function renderPnlChart(points) {
   const endY = yAt(endVal);
   const endLabelY = Math.max(padT + 10, Math.min(padT + plotH - 4, endY - 8));
 
+  const svgId = `${idPrefix}-svg`, crosshairId = `${idPrefix}-crosshair`,
+        dotId = `${idPrefix}-dot`, hitId = `${idPrefix}-hit`;
+
   container.innerHTML = `
-    <svg id="pnl-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="display:block;">
+    <svg id="${svgId}" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="display:block;">
       <line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${width - padR}" y2="${zeroY.toFixed(1)}" stroke="var(--border)" stroke-width="1"/>
       <polygon points="${areaPath}" fill="var(--accent)" opacity="0.10"/>
       <polyline points="${linePath}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
       <text x="${width - padR}" y="${endLabelY}" text-anchor="end" font-size="12" font-weight="600" fill="${endColorVar}">${fmtUsd(endVal)}</text>
       <text x="${padL}" y="${height - 6}" font-size="11" fill="var(--muted)">${fmtDateShort(points[0].date)}</text>
       <text x="${width - padR}" y="${height - 6}" text-anchor="end" font-size="11" fill="var(--muted)">${fmtDateShort(points[n - 1].date)}</text>
-      <line id="pnl-crosshair" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" stroke="var(--muted)" stroke-width="1" style="display:none;"/>
-      <circle id="pnl-dot" cx="0" cy="0" r="4" fill="var(--accent)" stroke="var(--panel)" stroke-width="2" style="display:none;"/>
-      <rect id="pnl-hit" x="${padL}" y="${padT}" width="${Math.max(plotW, 1)}" height="${Math.max(plotH, 1)}" fill="transparent"/>
+      <line id="${crosshairId}" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" stroke="var(--muted)" stroke-width="1" style="display:none;"/>
+      <circle id="${dotId}" cx="0" cy="0" r="4" fill="var(--accent)" stroke="var(--panel)" stroke-width="2" style="display:none;"/>
+      <rect id="${hitId}" x="${padL}" y="${padT}" width="${Math.max(plotW, 1)}" height="${Math.max(plotH, 1)}" fill="transparent"/>
     </svg>
   `;
 
-  const svgEl = document.getElementById("pnl-svg");
-  const hit = document.getElementById("pnl-hit");
-  const crosshair = document.getElementById("pnl-crosshair");
-  const dot = document.getElementById("pnl-dot");
+  const svgEl = document.getElementById(svgId);
+  const hit = document.getElementById(hitId);
+  const crosshair = document.getElementById(crosshairId);
+  const dot = document.getElementById(dotId);
 
   function pointerToIndex(clientX) {
     const rect = svgEl.getBoundingClientRect();
@@ -430,6 +456,7 @@ function renderLeaderboards(leaderboards) {
 }
 
 // ---- Trader detail modal (opened by clicking a leaderboard row) ----
+let modalPnlRequestSeq = 0;
 function openTraderModal(address) {
   if (!address) return;
   const traders = (lastData && lastData.whale_traders) || [];
@@ -445,12 +472,12 @@ function openTraderModal(address) {
     .map(w => `
       <div class="card">
         <div class="label">${escapeHtml(WINDOW_LABELS[w])}</div>
-        <div class="value ${windowProfit[w] >= 0 ? "pos" : "neg"}">${fmtUsd(windowProfit[w])}</div>
+        <div class="value ${windowProfit[w] >= 0 ? "pos" : "neg"}" title="${escapeHtml(fmtUsd(windowProfit[w]))}">${fmtCompactUsd(windowProfit[w])}</div>
       </div>
     `);
   document.getElementById("modal-stats").innerHTML = profitCards.join("") + `
     <div class="card"><div class="label">Open Positions</div><div class="value">${positions.length}</div></div>
-    <div class="card"><div class="label">Total Value</div><div class="value">${fmtUsd(totalValue)}</div></div>
+    <div class="card"><div class="label">Total Value</div><div class="value" title="${escapeHtml(fmtUsd(totalValue))}">${fmtCompactUsd(totalValue)}</div></div>
   `;
 
   document.getElementById("modal-positions-empty").style.display = positions.length ? "none" : "block";
@@ -469,6 +496,33 @@ function openTraderModal(address) {
     `).join("");
 
   document.getElementById("trader-modal").classList.add("open");
+
+  // Trader P&L chart — fetched on demand (not part of the cached whale scan) since
+  // it means a full profile-page request per click, not something to do for every
+  // tracked whale on every 15-minute bot cycle.
+  const seq = ++modalPnlRequestSeq;
+  const pnlEmptyEl = document.getElementById("modal-pnl-empty");
+  document.getElementById("modal-pnl-chart").innerHTML = "";
+  document.getElementById("modal-pnl-tooltip").style.display = "none";
+  pnlEmptyEl.textContent = "Loading…";
+  pnlEmptyEl.style.display = "block";
+
+  const pnlUrl = "/api/trader-pnl?address=" + encodeURIComponent(address) + "&window=1W" +
+    (key ? ("&key=" + encodeURIComponent(key)) : "");
+  fetch(pnlUrl)
+    .then(r => r.ok ? r.json() : [])
+    .then(points => {
+      if (seq !== modalPnlRequestSeq) return; // a different trader's modal opened since
+      pnlEmptyEl.textContent = "No recent P&L history.";
+      renderPnlChart(points, {
+        containerId: "modal-pnl-chart", tooltipId: "modal-pnl-tooltip",
+        emptyId: "modal-pnl-empty", idPrefix: "modal-pnl", height: 140,
+      });
+    })
+    .catch(() => {
+      if (seq !== modalPnlRequestSeq) return;
+      pnlEmptyEl.textContent = "No recent P&L history.";
+    });
 }
 function closeTraderModal() {
   document.getElementById("trader-modal").classList.remove("open");

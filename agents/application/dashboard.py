@@ -12,6 +12,7 @@ public URL without one.
 """
 
 import os
+import re
 import json
 import threading
 from pathlib import Path
@@ -21,7 +22,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from agents.polymarket.polymarket import Polymarket
 from agents.memory.trade_log import get_stats, TRADE_HISTORY_FILE
 from agents.memory.scoreboard import get_scoreboard_stats, get_pnl_timeseries
-from agents.connectors.whale_tracker import WHALE_CACHE_FILE
+from agents.connectors.whale_tracker import WHALE_CACHE_FILE, WhaleTracker
+
+_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "").strip()
 _INDEX_HTML = (Path(__file__).parent / "dashboard_static" / "index.html").read_bytes()
@@ -110,6 +113,18 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 body = json.dumps(_build_stats()).encode()
                 self._send(200, "application/json", body)
+            except Exception as e:
+                self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
+        elif path == "/api/trader-pnl":
+            qs = parse_qs(urlparse(self.path).query)
+            address = qs.get("address", [""])[0]
+            window = qs.get("window", ["1W"])[0]
+            if not _ADDRESS_RE.match(address):
+                self._send(400, "application/json", json.dumps({"error": "invalid address"}).encode())
+                return
+            try:
+                points = WhaleTracker().get_trader_pnl_history(address, window)
+                self._send(200, "application/json", json.dumps(points).encode())
             except Exception as e:
                 self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
         elif path in ("/", "/index.html"):
