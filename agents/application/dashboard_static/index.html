@@ -22,79 +22,113 @@
     background: var(--bg);
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    padding: 24px 16px 64px;
+    padding: 32px 20px 72px;
+    line-height: 1.45;
   }
-  .wrap { max-width: 1100px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  .header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 30px; }
+  h1 { font-size: 21px; font-weight: 650; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .subtitle { color: var(--muted); font-size: 13px; }
+  .live-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green); margin-right: 6px; vertical-align: 1px;
+  }
   .cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 12px;
-    margin-bottom: 28px;
+    margin-bottom: 32px;
   }
   .card {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px 16px;
+    border-radius: 12px;
+    padding: 16px 18px;
   }
-  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
-  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .card .label { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  .card .value { font-size: 23px; font-weight: 650; margin-top: 6px; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
   .value.pos { color: var(--green); }
   .value.neg { color: var(--red); }
-  section { margin-bottom: 28px; }
-  .section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
-  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0; }
-  .as-of { font-size: 11px; color: var(--muted); }
+  section { margin-bottom: 32px; }
+  .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  h2 { font-size: 13px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; }
+  .as-of { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .panel {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
+    border-radius: 12px;
+    padding: 18px;
   }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  td:first-child, th:first-child { white-space: normal; }
-  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th:first-child, td:first-child { padding-left: 0; }
+  th:last-child, td:last-child { padding-right: 0; }
+  th { color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+  /* Market/question columns wrap instead of forcing the row wide; numeric columns
+     right-align with tabular figures for scannable columns of numbers. */
+  #positions-table td:nth-child(1) { white-space: normal; min-width: 180px; }
+  #positions-table th:nth-child(n+3), #positions-table td:nth-child(n+3) { text-align: right; font-variant-numeric: tabular-nums; }
+  #trades-table td:nth-child(2) { white-space: normal; min-width: 180px; }
+  #trades-table th:nth-child(4), #trades-table td:nth-child(4),
+  #trades-table th:nth-child(7), #trades-table td:nth-child(7) { text-align: right; font-variant-numeric: tabular-nums; }
+  #whale-positions-table td:nth-child(3) { white-space: normal; min-width: 180px; }
+  #whale-positions-table th:nth-child(5), #whale-positions-table td:nth-child(5) { text-align: right; font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: none; }
-  .side-yes { color: var(--green); }
-  .side-no { color: var(--red); }
+  tbody tr { transition: background-color 120ms ease; }
+  tbody tr:hover { background: rgba(255,255,255,0.025); }
+  .side-yes { color: var(--green); font-weight: 600; }
+  .side-no { color: var(--red); font-weight: 600; }
   .status-filled { color: var(--green); }
-  .status-fok_killed, .status-error { color: var(--muted); }
-  .outcome-win { color: var(--green); }
-  .outcome-loss { color: var(--red); }
+  .status-fok_killed, .status-error, .status-untradeable { color: var(--muted); }
+  .outcome-win { color: var(--green); font-weight: 600; }
+  .outcome-loss { color: var(--red); font-weight: 600; }
   .outcome-pending { color: var(--muted); }
-  .empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
+  .empty {
+    color: var(--muted); font-size: 13px; padding: 22px 12px; text-align: center;
+    border: 1px dashed var(--border); border-radius: 8px;
+  }
   .scroll { overflow-x: auto; }
-  .scroll-y { max-height: 360px; overflow-y: auto; }
+  .scroll-y { max-height: 380px; overflow-y: auto; }
 
-  .lb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-  .lb-col h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 8px; }
-  .lb-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
-  .lb-row:last-child { border-bottom: none; }
-  .lb-rank { color: var(--muted); width: 18px; display: inline-block; }
-  .lb-profit { font-variant-numeric: tabular-nums; }
+  .lb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }
+  .lb-col h3 {
+    font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  .lb-row { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 0; font-size: 13px; }
+  .lb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 8px; }
+  .lb-rank { color: var(--muted); width: 16px; display: inline-block; font-variant-numeric: tabular-nums; }
+  .lb-profit { font-variant-numeric: tabular-nums; color: var(--green); flex-shrink: 0; }
 
-  .win-badge {
-    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px;
-    background: rgba(124,140,255,0.15); color: var(--accent); margin-right: 4px;
+  .window-badge {
+    display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+    background: rgba(124,140,255,0.14); color: var(--accent); margin: 1px 3px 1px 0; white-space: nowrap;
   }
 
   #pnl-chart-wrap { position: relative; }
   #pnl-tooltip-html {
     position: absolute; pointer-events: none; background: #1c2130; border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 9px; font-size: 12px; display: none; white-space: nowrap;
-    transform: translate(-50%, -100%); margin-top: -10px;
+    border-radius: 8px; padding: 8px 11px; font-size: 12px; display: none; white-space: nowrap;
+    transform: translate(-50%, -100%); margin-top: -10px; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
   }
   #pnl-tooltip-html .t-date { color: var(--muted); font-size: 11px; }
-  #pnl-tooltip-html .t-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  #pnl-tooltip-html .t-val { font-weight: 650; font-variant-numeric: tabular-nums; font-size: 14px; margin: 2px 0; }
+
+  @media (max-width: 480px) {
+    body { padding: 20px 12px 56px; }
+    .card { padding: 12px 14px; }
+    .card .value { font-size: 19px; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Whale-Leaderboard Trading Bot</h1>
-  <div class="subtitle">Read-only stats · <span id="updated">loading…</span></div>
+  <div class="header">
+    <div>
+      <h1>Whale-Leaderboard Trading Bot</h1>
+      <div class="subtitle"><span class="live-dot"></span>Read-only stats · <span id="updated">loading…</span></div>
+    </div>
+  </div>
 
   <div class="cards" id="cards"></div>
 
@@ -111,28 +145,28 @@
 
   <section>
     <h2>Open Positions</h2>
-    <div class="scroll">
+    <div class="panel scroll">
       <table id="positions-table">
         <thead>
           <tr><th>Market</th><th>Side</th><th>Size</th><th>Avg</th><th>Now</th><th>Value</th></tr>
         </thead>
         <tbody></tbody>
       </table>
+      <div class="empty" id="positions-empty" style="display:none;">No open positions.</div>
     </div>
-    <div class="empty" id="positions-empty" style="display:none;">No open positions.</div>
   </section>
 
   <section>
     <h2>Recent Trades</h2>
-    <div class="scroll">
+    <div class="panel scroll">
       <table id="trades-table">
         <thead>
           <tr><th>Time</th><th>Market</th><th>Side</th><th>Amount</th><th>Status</th><th>Outcome</th><th>P&amp;L</th></tr>
         </thead>
         <tbody></tbody>
       </table>
+      <div class="empty" id="trades-empty" style="display:none;">No trades yet.</div>
     </div>
-    <div class="empty" id="trades-empty" style="display:none;">No trades yet.</div>
   </section>
 
   <section>
@@ -156,8 +190,8 @@
         </thead>
         <tbody></tbody>
       </table>
+      <div class="empty" id="whale-positions-empty" style="display:none;">No whale position data yet.</div>
     </div>
-    <div class="empty" id="whale-positions-empty" style="display:none;">No whale position data yet.</div>
   </section>
 </div>
 
@@ -202,6 +236,14 @@ function sideClass(side) {
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+const STATUS_LABELS = { filled: "Filled", fok_killed: "FOK killed", untradeable: "Untradeable", error: "Error" };
+const OUTCOME_LABELS = { win: "Win", loss: "Loss", push: "Push", pending: "Pending", "n/a": "—" };
+const WINDOW_LABELS = { today: "Today", weekly: "Weekly", monthly: "Monthly", all_time: "All-Time" };
+function statusLabel(s) { return STATUS_LABELS[s] || s || "—"; }
+function outcomeLabel(s) { return OUTCOME_LABELS[s] || s || "—"; }
+function windowBadges(windows) {
+  return (windows || []).map(w => `<span class="window-badge">${escapeHtml(WINDOW_LABELS[w] || w)}</span>`).join("");
 }
 
 // ---- Profit-over-time line chart (inline SVG, no charting library) ----
@@ -333,11 +375,11 @@ function renderLeaderboards(leaderboards) {
   wrap.innerHTML = cols.map(c => {
     const rows = (leaderboards[c.key] || []).map((t, i) => `
       <div class="lb-row">
-        <span><span class="lb-rank">${i + 1}</span>${escapeHtml(t.name)}</span>
+        <span class="lb-name"><span class="lb-rank">${i + 1}</span>${escapeHtml(t.name)}</span>
         <span class="lb-profit">${fmtCompactUsd(t.profit)}</span>
       </div>
     `).join("");
-    return `<div class="lb-col"><h3>${escapeHtml(c.label)}</h3>${rows || '<div class="empty">—</div>'}</div>`;
+    return `<div class="lb-col"><h3>${escapeHtml(c.label)}</h3>${rows || '<div class="empty">No data</div>'}</div>`;
   }).join("");
 }
 
@@ -348,7 +390,7 @@ function renderWhalePositions(traders) {
   const rows = [];
   (traders || []).forEach(t => {
     (t.positions || []).forEach(p => {
-      rows.push({ trader: t.name, windows: (t.windows || []).join(", "), ...p });
+      rows.push({ trader: t.name, windowList: t.windows || [], ...p });
     });
   });
   rows.sort((a, b) => (b.value || 0) - (a.value || 0));
@@ -357,7 +399,7 @@ function renderWhalePositions(traders) {
   body.innerHTML = rows.map(r => `
     <tr>
       <td>${escapeHtml(r.trader)}</td>
-      <td>${escapeHtml(r.windows)}</td>
+      <td>${windowBadges(r.windowList)}</td>
       <td>${escapeHtml(r.title || "")}</td>
       <td class="${sideClass(r.side)}">${escapeHtml(r.side || "")}</td>
       <td>${fmtUsd(r.value)}</td>
@@ -409,8 +451,8 @@ function render(data) {
       <td>${escapeHtml(t.question || "")}</td>
       <td class="${sideClass(t.side)}">${escapeHtml(t.side || "")}</td>
       <td>${fmtUsd(t.amount_usd)}</td>
-      <td class="status-${t.status}">${escapeHtml(t.status || "")}</td>
-      <td class="outcome-${t.outcome}">${escapeHtml(t.outcome || "")}</td>
+      <td class="status-${t.status}">${escapeHtml(statusLabel(t.status))}</td>
+      <td class="outcome-${t.outcome}">${escapeHtml(outcomeLabel(t.outcome))}</td>
       <td>${t.pnl_usd === null || t.pnl_usd === undefined ? "—" : fmtUsd(t.pnl_usd)}</td>
     </tr>
   `).join("");

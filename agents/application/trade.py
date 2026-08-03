@@ -98,7 +98,7 @@ class Trader:
                 f"  │  Positions: {len(open_positions)} open",
                 get_scoreboard_line(),
                 f"  │  Trades  : {stats['total_attempts']} attempts | {stats['filled']} filled | "
-                f"{stats['fok_killed']} FOK killed",
+                f"{stats['fok_killed']} FOK killed | {stats['untradeable']} untradeable",
                 "  └───────────────────────────────────────────────────────",
                 "",
             ]))
@@ -151,8 +151,12 @@ class Trader:
             held_tokens = {p.get("asset") for p in open_positions if p.get("asset")}
 
             # Signals arrive pre-sorted: fresh first, then whale_count, then whale_volume.
-            # Walk them in order and take the first one that clears both rules.
-            candidate = None
+            # Filter down to every signal that clears both dedup rules, then try them
+            # IN ORDER until one actually fills — a single signal that can't execute
+            # (FOK killed, or the market's already moved outside Polymarket's tradeable
+            # [0.01, 0.99] price range) shouldn't burn the whole 15-minute cycle when
+            # other valid consensus signals are sitting right there unused.
+            eligible = []
             for s in whale_signals:
                 title, side, token_id = s["title"], s["side"], s["asset"]
                 key = (title.strip().lower(), side.strip().lower())
@@ -162,27 +166,11 @@ class Trader:
                     continue  # same exact bet already made
                 if opp_key in open_pairs or opp_key in traded_pairs:
                     continue  # already holding the opposite outcome of this market
+                eligible.append(s)
 
-                candidate = s
-                break
-
-            if candidate is None:
+            if not eligible:
                 print("  ✗ No eligible whale signal — already bet on every consensus market this cycle. Skipping.")
                 return
-
-            question    = candidate["title"]
-            token_id    = candidate["asset"]
-            trade_side  = candidate["side"]
-            whale_count = candidate["whale_count"]
-            whale_vol   = candidate["whale_volume_total"]
-            is_fresh    = candidate["is_fresh"]
-            drift       = candidate["price_drift"]
-
-            print(f"")
-            print(f"  Selected: \"{question[:80]}\"")
-            print(f"  Signal: {whale_count} whale(s) {'[FRESH]' if is_fresh else '[ongoing]'}  "
-                  f"{trade_side.upper()}  entry {candidate['avg_entry']:.3f} -> now {candidate['cur_price']:.3f}  "
-                  f"({drift:.0%} drift)  combined ${whale_vol:,}")
 
             trade_amount = balance * BET_FRACTION
             if trade_amount < ABSOLUTE_MIN_TRADE:
@@ -191,63 +179,96 @@ class Trader:
                 else:
                     print(f"  ✗ Balance ${balance:.2f} too low to place the ${ABSOLUTE_MIN_TRADE} minimum order. Skipping.", flush=True)
                     return
-            print(f"  Size: ${trade_amount:.2f}  (25% of ${balance:.2f} balance)")
 
-            if not token_id:
-                print("  ✗ Signal had no token ID — skipping.")
-                return
+            filled = False
+            for i, candidate in enumerate(eligible):
+                if self._attempt_trade(candidate, trade_amount, balance):
+                    filled = True
+                    break
+                if i < len(eligible) - 1:
+                    print(f"  → Trying next eligible signal ({len(eligible) - i - 1} more)...")
 
-            print(f"  Placing BUY {trade_side} — ${trade_amount:.2f}  token: {token_id[:20]}...")
-            from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
-            order_args = MarketOrderArgs(
-                token_id=token_id,
-                amount=trade_amount,
-                side=Side.BUY,
-                order_type=OrderType.FOK,
-            )
-            try:
-                resp = self.polymarket.client.create_and_post_market_order(
-                    order_args=order_args,
-                    options=PartialCreateOrderOptions(tick_size="0.01"),
-                    order_type=OrderType.FOK,
-                )
-                order_id = resp.get("orderID", resp.get("id", "")) if isinstance(resp, dict) else ""
-                success = resp.get("success", True) if isinstance(resp, dict) else True
-                if success:
-                    print(f"  ✓ FILLED  order {str(order_id)[:16] or '(no id)'}")
-                    log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
-                              drift, trade_amount, "filled")
-                    self._record_trade(token_id, question, trade_side)
-                    _discord(
-                        f"✅ **TRADE FILLED** — {trade_side} ${trade_amount:.2f}\n"
-                        f"> {question[:120]}\n"
-                        f"> {whale_count} whale(s) {'[FRESH]' if is_fresh else ''} — "
-                        f"entry {candidate['avg_entry']:.3f} vs now {candidate['cur_price']:.3f} ({drift:.0%} drift)"
-                    )
-                else:
-                    print(f"  ✗ Order not successful: {resp}")
-                    log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
-                              drift, trade_amount, "error")
-            except Exception as e:
-                err = str(e)
-                if "fully filled" in err or "FOK" in err.upper() or "killed" in err.lower():
-                    print(f"  ✗ FOK killed — insufficient liquidity.", flush=True)
-                    log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
-                              drift, trade_amount, "fok_killed")
-                    _discord(
-                        f"⚡ **FOK KILLED** — no liquidity for {trade_side} ${trade_amount:.2f}\n"
-                        f"> {question[:120]}"
-                    )
-                else:
-                    print(f"  ✗ Order error: {e}")
-                    import traceback; traceback.print_exc()
-                    log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
-                              drift, trade_amount, "error")
+            if not filled:
+                print(f"  ✗ None of {len(eligible)} eligible signal(s) filled this cycle.", flush=True)
 
         except Exception as e:
             print(f"Error: {e}")
             import traceback
             traceback.print_exc()
+
+    def _attempt_trade(self, candidate: dict, trade_amount: float, balance: float) -> bool:
+        """Try to place a FOK BUY for one whale signal. Returns True on fill."""
+        question    = candidate["title"]
+        token_id    = candidate["asset"]
+        trade_side  = candidate["side"]
+        whale_count = candidate["whale_count"]
+        whale_vol   = candidate["whale_volume_total"]
+        is_fresh    = candidate["is_fresh"]
+        drift       = candidate["price_drift"]
+
+        print(f"")
+        print(f"  Selected: \"{question[:80]}\"")
+        print(f"  Signal: {whale_count} whale(s) {'[FRESH]' if is_fresh else '[ongoing]'}  "
+              f"{trade_side.upper()}  entry {candidate['avg_entry']:.3f} -> now {candidate['cur_price']:.3f}  "
+              f"({drift:.0%} drift)  combined ${whale_vol:,}")
+
+        if not token_id:
+            print("  ✗ Signal had no token ID — skipping.")
+            return False
+
+        print(f"  Size: ${trade_amount:.2f}  (25% of ${balance:.2f} balance)")
+        print(f"  Placing BUY {trade_side} — ${trade_amount:.2f}  token: {token_id[:20]}...")
+        from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
+        order_args = MarketOrderArgs(
+            token_id=token_id,
+            amount=trade_amount,
+            side=Side.BUY,
+            order_type=OrderType.FOK,
+        )
+        try:
+            resp = self.polymarket.client.create_and_post_market_order(
+                order_args=order_args,
+                options=PartialCreateOrderOptions(tick_size="0.01"),
+                order_type=OrderType.FOK,
+            )
+            order_id = resp.get("orderID", resp.get("id", "")) if isinstance(resp, dict) else ""
+            success = resp.get("success", True) if isinstance(resp, dict) else True
+            if success:
+                print(f"  ✓ FILLED  order {str(order_id)[:16] or '(no id)'}")
+                log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
+                          drift, trade_amount, "filled")
+                self._record_trade(token_id, question, trade_side)
+                _discord(
+                    f"✅ **TRADE FILLED** — {trade_side} ${trade_amount:.2f}\n"
+                    f"> {question[:120]}\n"
+                    f"> {whale_count} whale(s) {'[FRESH]' if is_fresh else ''} — "
+                    f"entry {candidate['avg_entry']:.3f} vs now {candidate['cur_price']:.3f} ({drift:.0%} drift)"
+                )
+                return True
+            print(f"  ✗ Order not successful: {resp}")
+            log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
+                      drift, trade_amount, "error")
+            return False
+        except Exception as e:
+            err = str(e)
+            if "fully filled" in err or "FOK" in err.upper() or "killed" in err.lower():
+                print(f"  ✗ FOK killed — insufficient liquidity.", flush=True)
+                log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
+                          drift, trade_amount, "fok_killed")
+                _discord(
+                    f"⚡ **FOK KILLED** — no liquidity for {trade_side} ${trade_amount:.2f}\n"
+                    f"> {question[:120]}"
+                )
+            elif "invalid price" in err.lower():
+                print(f"  ✗ Market no longer tradeable (price outside [0.01, 0.99] — likely near-resolved): {e}", flush=True)
+                log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
+                          drift, trade_amount, "untradeable")
+            else:
+                print(f"  ✗ Order error: {e}")
+                import traceback; traceback.print_exc()
+                log_trade(question, token_id, trade_side, candidate["avg_entry"], candidate["cur_price"],
+                          drift, trade_amount, "error")
+            return False
 
 
 if __name__ == "__main__":
