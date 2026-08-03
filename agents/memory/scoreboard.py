@@ -18,7 +18,8 @@ import json
 import os
 import datetime
 
-TRADE_HISTORY_FILE = "trade_history.json"
+from agents.memory.trade_log import TRADE_HISTORY_FILE  # single source of truth for the path
+
 RESOLUTION_THRESHOLD = 0.90   # curPrice >= 0.90 = payout confirmed
 
 

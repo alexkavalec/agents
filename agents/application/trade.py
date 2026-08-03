@@ -22,9 +22,12 @@ import requests as _requests
 BET_FRACTION = 0.25   # the only sizing rule: 25% of current balance, every trade
 ABSOLUTE_MIN_TRADE = 1.0   # Polymarket's own order minimum (~$1) — an exchange
                             # constraint, not a risk rule. Below this, skip.
-STATE_FILE = "trader_trade_history.json"  # every (token_id, title, side) ever bought —
+STATE_FILE = os.path.join(os.environ.get("DATA_DIR", "."), "trader_trade_history.json")
+                                            # every (token_id, title, side) ever bought —
                                             # backs the two dedup rules below, as a
-                                            # redundant check alongside the live positions API
+                                            # redundant check alongside the live positions API.
+                                            # DATA_DIR should point at a mounted Railway Volume
+                                            # so this survives redeploys — see CLAUDE.md.
 HIGH_CONSENSUS_WHALES = 5  # bypass the "today's events only" filter (rule 6) when this
                             # many+ independent whales agree on the same (market, side) —
                             # strong enough to also catch whales positioned ahead of a
