@@ -296,6 +296,28 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   confirmed no stat card overflows anymore (`scrollWidth === clientWidth` on every card value),
   the modal's chart renders and its hover crosshair/tooltip work independently of the main
   dashboard's own (separate, unaffected) chart instance.
+- [x] **Task #34** — Added period tabs (Day/Week/Month/Year/YTD/All Time) to the trader modal's
+  P&L chart. Task #33's initial `get_trader_pnl_history()` scraped the profile page's dehydrated
+  state, which only ever had `1D`/`1W`/`1M`/`ALL` prefetched — no `1Y`/`YTD` data available that
+  way at all. Found the real fix by grepping Polymarket's production JS chunks for the
+  `"portfolio-pnl"` query's fetcher function, which led straight to the actual REST endpoint
+  (`user-pnl-api.polymarket.com/user-pnl`, params `user_address`/`interval`/`fidelity`) — rewrote
+  `get_trader_pnl_history()` to call it directly instead of scraping HTML, which is both simpler
+  and supports all 6 windows the user asked for (see Whale API Notes below for the full endpoint
+  writeup, including the fidelity-per-window mapping also pulled from the same JS). `dashboard.py`'s
+  `/api/trader-pnl` endpoint needed no changes — it already passed `window` straight through.
+  `index.html` gained a `.pnl-period-tabs` button row above the modal's chart; clicking a tab
+  re-fetches and re-renders via a new `loadTraderPnl(address, window)` (extracted from the fetch
+  logic Task #33 had inlined in `openTraderModal()`, now shared by both the initial load and every
+  tab click), with the same request-sequence guard as before so a slow response for an abandoned
+  tab/trader can't clobber a newer one. **Could not live-test the new endpoint from this dev
+  sandbox** — its own egress policy blocks `user-pnl-api.polymarket.com` outright (confirmed via
+  `/root/.ccr/README.md`, a 403 straight from the local agent proxy, unrelated to and stricter than
+  the bot's actual Railway network policy) — so verification here relied on reading the production
+  JS source directly rather than a live call, plus a mocked-backend Playwright test confirming the
+  frontend correctly requests a distinct window per tab click, updates the active-tab styling, and
+  re-renders the chart with that window's data. Flagged to the user to confirm it actually returns
+  data once deployed to Railway.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
@@ -327,14 +349,31 @@ losses, zero wins. There is no reliable way to derive a win/loss/push record for
 trader from Polymarket's public API — confirmed by inspecting every embedded query on their own
 profile page (see below), none of which include one either.
 
-### `polymarket.com/profile/{address}` — per-trader P&L chart (Task #33)
-Same escaped-JSON dehydrated-state format as the leaderboard page (`\"data\":[...]` preceding a
-`\"queryKey\":[...]` marker — see `_scrape_leaderboard_page()`), just different query keys:
-- `["portfolio-pnl", address, window]` → `[{"t": unix_seconds, "p": cumulative_pnl}, ...]`,
-  `window` one of `"1D"`/`"1W"`/`"1M"`/`"ALL"`. This is what `get_trader_pnl_history()` scrapes.
-- `["user-stats", address]` → `{"trades": int, "largestWin": float, "views": int, "joinDate": iso}`
-  — no win/loss breakdown, just a trade count and single largest win.
-- Other query keys present but unused (no realized-P&L-per-market breakdown in any of them):
+### `user-pnl-api.polymarket.com/user-pnl` — per-trader P&L chart (Task #33/#34)
+The real, directly-callable REST endpoint behind a trader's own profile-page chart —
+found by grepping Polymarket's production Next.js JS chunks (`/_next/static/chunks/*.js`) for
+the `"portfolio-pnl"` React Query key, which led to the actual `queryFn`:
+`${USER_PNL_URL}/user-pnl?user_address=${address}&interval=${window.toLowerCase()}&fidelity=${fidelity}`,
+`USER_PNL_URL` defaulting to `https://user-pnl-api.polymarket.com`. This **replaced** an earlier,
+more fragile approach (Task #33's first cut) that scraped the same data out of the profile page's
+escaped-JSON dehydrated state (same technique as `_scrape_leaderboard_page()`) — that only worked
+for whatever windows the page happened to prefetch server-side (`1D`/`1W`/`1M`/`ALL`), which is
+why Task #33 initially shipped without `1Y`/`YTD`. The direct endpoint accepts all six:
+- `window` (as sent to `get_trader_pnl_history()`): `"1D"` / `"1W"` / `"1M"` / `"1Y"` / `"YTD"` /
+  `"ALL"` — lowercased for the `interval` query param.
+- `fidelity` (data-point spacing, also reverse-engineered from the same JS): `1D`→`1h`, `1W`→`3h`,
+  `1M`→`18h`, everything else (`1Y`/`YTD`/`ALL`) → `1d`.
+- Response: `[{"t": unix_seconds, "p": cumulative_pnl}, ...]` — same shape either way.
+- **Could not be live-verified from inside a Claude Code sandbox session**: this dev environment's
+  own egress policy blocks `user-pnl-api.polymarket.com` (403 from the local agent proxy, confirmed
+  via `/root/.ccr/README.md` — a different, stricter restriction than the bot's own Railway network
+  policy). Correctness here rests on reading the actual production JS source, not a live test.
+  Verify this actually returns data once deployed; if Railway's own egress is ever restricted
+  similarly, this host would need to be added there.
+- `["user-stats", address]` (still only reachable via the profile-page scrape, not otherwise used)
+  → `{"trades": int, "largestWin": float, "views": int, "joinDate": iso}` — no win/loss breakdown,
+  just a trade count and single largest win.
+- Other profile-page query keys present but unused (no realized-P&L-per-market breakdown in any):
   `/api/profile/marketsTraded`, `/api/profile/userData`, `/api/profile/volume`,
   `"positions","value"`, `"profile-biggest-wins"`, `"profile","positions",...,"CURRENT","DESC"`.
 
