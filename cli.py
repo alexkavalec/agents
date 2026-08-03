@@ -25,7 +25,7 @@ def run_autonomous_trader() -> None:
         sys.exit(1)
 
 @app.command()
-def run_loop(interval_minutes: int = 30) -> None:
+def run_loop(interval_minutes: int = 15) -> None:
     """
     Run autonomous trader in a continuous loop
     """

@@ -2,15 +2,15 @@
 
 ## Repo & Deploy
 - **Repo:** github.com/alexkavalec/agents (forked from Polymarket/agents)
-- **Host:** Railway, runs 24/7. Start command: `python cli.py run-loop --interval-minutes 60`
+- **Host:** Railway, runs 24/7. Start command: `python cli.py run-loop --interval-minutes 15`
 - **Stack:** Python 3.9, py-clob-client-v2, web3.py. **No LLM/AI dependency** — the bot is
   purely mechanical, driven entirely by Polymarket leaderboard data.
 - **Branch for new work:** `claude/polymarket-trading-bot-*` → PR → squash merge to `main`
 
 ## Key Files (the entire trading pipeline — nothing else remains)
 - `cli.py` — `run_loop` / `run_autonomous_trader` entry points only
-- `agents/application/trade.py` — `Trader`: orchestration, all guardrails, entry sizing,
-  and mechanical stop-loss/take-profit position management
+- `agents/application/trade.py` — `Trader`: orchestration, sizing, order placement, the
+  two dedup rules. No position management of any kind — positions are never sold by the bot.
 - `agents/connectors/whale_tracker.py` — leaderboard scraping + consensus signal generation
   (the bot's SOLE trade signal source)
 - `agents/polymarket/polymarket.py` — CLOB client wrapper: auth, balance, positions, orders
@@ -23,30 +23,56 @@ has been **deleted**, not just disconnected — see git history if any of it nee
 The bot only ever calls Polymarket's own `data-api.polymarket.com` and `clob.polymarket.com`
 endpoints, plus a Discord webhook for notifications.
 
-## Current Architecture — whale-leaderboard-only, fully mechanical (as of 2026-08-03)
-There is no AI anywhere in the trading loop — no market scan, no RAG, no GPT probability
-estimate, no AI-gated exits. Entry AND exit decisions are both pure price/leaderboard logic.
-`Trader.one_best_trade()` each cycle:
+## Current Architecture — pure leaderboard-following, zero risk management (as of 2026-08-03)
+The bot has no opinion of its own about any market. It watches what the top leaderboard
+traders are doing and copies consensus moves, full stop. There is no AI, no market scan, no
+signal filtering beyond "did enough whales agree," no stop-loss, no take-profit, no daily
+caps — the only guardrails are the five rules listed below.
 
-1. **Position management first** (`maintain_positions()`, now called at the top of every
-   cycle — previously defined but never invoked, now wired in) — unconditional -60% stop-loss
-   and unconditional +60% take-profit, both pure price triggers, no re-evaluation of any kind
-2. **Guardrail pre-checks** — daily loss floor, daily spend cap, max open positions, cooldown
-3. **Whale scan** — `WhaleTracker.get_whale_signals()` scrapes the today/weekly/monthly/all-time
-   profit leaderboards (`polymarket.com/leaderboard/overall/{window}/profit`), pulls open positions
-   for every unique trader across all four windows, and buckets them by `(token, side)`
-4. **Consensus signal** — a `(market, side)` bucket becomes a candidate signal only if
-   `MIN_WHALES_AGREE` (2+) independent whales hold it and price hasn't drifted more than
-   `MAX_PRICE_DRIFT` (20%) from their average entry
-5. **Signal selection** — signals are pre-sorted (fresh first, then whale count, then combined
-   $ volume/profit); the bot walks the list and picks the first signal not already held, not
-   traded today, and not keyword-correlated with an existing open position
-6. **Sizing** — scales with signal strength: `count_factor` (whales agreeing, saturates at 5) and
-   `volume_factor` (combined $ profit/volume, saturates at $2M) are averaged into a fraction
-   between `MIN_TRADE_FRACTION` (3%) and `MAX_TRADE_FRACTION` (10%); fresh signals (a whale that
-   just opened this cycle) get a 1.25x bonus, still capped at 10%
-7. **Order executor** — buys the exact token the whales hold (no YES/NO inference needed —
-   the whale's position tells us the side directly) via FOK market order if risk passes
+`Trader.one_best_trade()` runs every 15 minutes:
+
+1. **Whale scan** — `WhaleTracker.get_whale_signals()` fetches the top 10 traders on the
+   today / weekly / monthly / all-time profit leaderboards (`polymarket.com/leaderboard/overall/
+   {window}/profit`), pulls every open position each of those traders currently holds, and logs
+   both boxes in full every cycle (leaderboard = each whale's record for that window, e.g. weekly
+   = 7-day profit; signals = the positions found)
+2. **Consensus signal** — a `(market, side)` becomes a candidate signal once `MIN_WHALES_AGREE`
+   (2+, in `whale_tracker.py`) independent whales hold it. Nothing else gates a signal — no price
+   drift cap, no minimum whale count beyond 2, no filtering by market category or liquidity
+3. **Signal selection** — signals are pre-sorted (fresh first, then whale count, then combined
+   $ volume/profit); the bot walks the list and picks the first one that clears the two rules below
+4. **Sizing** — flat `BET_FRACTION` (25%) of current balance, every single trade. No scaling by
+   signal strength, whale count, or conviction of any kind
+5. **Order executor** — buys the exact token the whales hold (no YES/NO inference needed — the
+   whale's position tells us the side directly) via FOK market order
+
+The bot **never sells**. Once a position is opened it is held until Polymarket resolves the
+market on its own — no stop-loss, no take-profit, no manual exit under any circumstance,
+regardless of how far the position moves against it.
+
+## The only 5 rules the bot follows (all in `trade.py`)
+1. `BET_FRACTION = 0.25` — bet exactly 25% of current account balance on every trade
+2. No take-profit, no stop-loss, no cash-out — a position is held to resolution no matter what
+3. No daily loss limit, no daily spend cap — the bot will keep betting 25% of whatever balance
+   remains, cycle after cycle, for as long as consensus signals keep appearing
+4. **Never make the exact same bet twice** — if the bot already holds (or has ever bought) a
+   given side of a given market, a repeat signal for that same (market, side) is skipped
+5. **Never bet the opposite outcome of a market already bet on** — if the bot holds YES on a
+   market, a consensus signal for NO on that same market is skipped (and vice versa)
+
+Rules 4 and 5 are checked against both the live Polymarket positions API and a local
+persistent journal (`trader_trade_history.json`, see below) — the journal exists purely as a
+redundant check in case the positions API hasn't caught up yet in the seconds right after a fill.
+
+`ABSOLUTE_MIN_TRADE = $1` also exists, but it isn't a risk rule — it's Polymarket's own order
+minimum. If 25% of balance is below $1, the bot bumps up to $1 (if the balance can cover it) or
+skips (if it can't). This is an exchange constraint, not a choice.
+
+**Everything that used to be here is gone**: no `MAX_OPEN_POSITIONS`, no `DAILY_SPEND_FRACTION`,
+no `DAILY_LOSS_FRACTION`, no `TRADE_COOLDOWN_MINUTES`, no keyword correlation filter, no price
+drift cap on signals, no scaled position sizing, no `maintain_positions()` / stop-loss / take-
+profit of any kind. Do not resurrect any of it without an explicit new instruction — the whole
+point of this iteration was to strip every rule down to the five above.
 
 ---
 
@@ -58,49 +84,31 @@ It is NOT read by the running trading bot. It's documentation for the developer.
 
 ### 2. Runtime memory (shared agent state)
 Running agents share state via files or in-memory data structures — not via CLAUDE.md.
-Current runtime state lives in `trader_daily_state.json` (project root):
+`trader_trade_history.json` (project root) is a flat, ever-growing list of every trade the bot
+has ever filled — used only to back the two dedup rules above:
 ```json
-{
-  "date": "2026-05-21",
-  "start_balance": 19.38,
-  "spent": 1.94,
-  "last_trade_time": "2026-05-21T05:18:52",
-  "traded_tokens": ["17522237181479319953..."]
-}
+[
+  {"token_id": "17522237181479319953...", "title": "Will X happen?", "side": "Yes"}
+]
 ```
-Cooldown and dedup also use live Polymarket API calls (`data-api.polymarket.com/activity`
-and `/positions`) so guards survive Railway container restarts.
+There's no daily reset and no expiry — an entry stays relevant for as long as the market it
+refers to remains open (once a market resolves it can't be traded again anyway, so old entries
+are harmless dead weight, not a correctness risk).
+
+`whale_positions_state.json` persists each whale's positions between cycles so the bot can tell
+a freshly-opened whale position (this cycle) from one they've held for a while.
 
 ---
 
 ## Future: Multi-Agent Architecture — SUPERSEDED, do not build
 
 An earlier version of this doc proposed adding Scanner/Analyst/Forecaster/Risk/Post-mortem
-LLM agents on top of the trading loop. As of 2026-08-03 the direction reversed: the bot was
-explicitly stripped down to be **strictly leaderboard-driven with zero AI**, and all AI
-infrastructure (`executor.py`, `prompts.py`, Chroma, news/enrichment connectors) was deleted
-outright, not just disconnected. Do not resurrect the multi-agent plan without an explicit
-new decision from the user to reintroduce AI into the entry or exit path.
-
----
-
-## Guardrails (all in trade.py, unless noted)
-- `MAX_TRADE_FRACTION = 0.10` / `MIN_TRADE_FRACTION = 0.03` — trade size scales with whale
-  signal strength between these bounds (see Architecture above)
-- `WHALE_COUNT_SATURATION = 5`, `WHALE_VOLUME_SATURATION = 2_000_000`, `FRESH_SIGNAL_BONUS = 1.25`
-  — sizing inputs
-- `MIN_WHALES_AGREE = 2` (in `whale_tracker.py`) — minimum independent whales required for a signal
-- `MAX_PRICE_DRIFT = 0.20` (in `whale_tracker.py`) — reject signals whose price has drifted
-  more than 20% from the whales' average entry (tightened from 40%)
-- `MAX_OPEN_POSITIONS = 25` — enforced via data-api.polymarket.com/positions
-- `DAILY_SPEND_FRACTION = 0.30` — stop after spending 30% of day-start balance
-- `DAILY_LOSS_FRACTION = 0.15` — halt for the day if balance drops 15%
-- `TRADE_COOLDOWN_MINUTES = 55` — min gap between trades; reads activity API (survives redeploys)
-- Dedup — skips if token already held in open positions or already traded today (reads positions API)
-- Correlation filter — skips signals sharing ≥2 keywords with an existing open position's title
-- Position management — unconditional -60% stop-loss and unconditional +60% take-profit, both
-  pure price triggers via `maintain_positions()` (no AI re-eval of any kind, no market fetch)
-- State file: `trader_daily_state.json` in project root
+LLM agents on top of the trading loop. As of 2026-08-03 the direction reversed twice: first to
+**strictly leaderboard-driven with zero AI**, then further to **zero risk management beyond 5
+explicit rules** — see Architecture above. All AI infrastructure (`executor.py`, `prompts.py`,
+Chroma, news/enrichment connectors) and all scaled/adaptive risk logic (stop-loss, take-profit,
+daily caps, cooldowns, correlation filtering, drift caps) have been deleted outright, not just
+disconnected. Do not resurrect either plan without an explicit new decision from the user.
 
 ## Known Issues / To-Do
 - [x] **Task #3** — Trade side logic fixed (`_resolve_trade` reads token IDs from selected market)
@@ -108,16 +116,15 @@ new decision from the user to reintroduce AI into the entry or exit path.
 - [x] **Task #7** — Log cleanup: batched prints, removed redundant lines, compact pipeline summary
 - [x] **Task #8** — Trade size fix: bot was blocked at $9.40 balance (10% = $0.94 < $1 min); now checks `balance >= ABSOLUTE_MIN_TRADE` instead of `full_max >= ABSOLUTE_MIN_TRADE`
 - [x] **Task #9** — Scoreboard premature LOSS fix: only resolve win/loss when `redeemable=True` (not just low price on open market)
-- [x] **Task #10** — Correlation stop words expanded: added "meeting", month names, "presidential", "candidate", "winner" to `_CORR_STOP`
 - [x] **Task #11** — Whale leaderboard fixed: API ignores `window` param, removed multi-window fetching, now fetches once; numbered display with box formatting
 - [x] **Task #12** — Removed debug print from `whale_tracker.py` `get_top_traders_from_leaderboard()`
 - [x] **Task #13** — Updated display label from "all-time PnL" to "unrealized PnL"; updated docstring. Confirmed `pnl` = unrealized. All-time profit field still unknown — revisit if API changes.
-- [x] **Task #14** — Added "election", "elections", "elect", "elected", "vote", "votes", "voting" to `_CORR_STOP` to prevent cross-country election markets from triggering false correlation blocks
-- [x] **Task #5** — Discord webhook notifications added (`DISCORD_WEBHOOK_URL` env var on Railway); fires on: trade filled, FOK killed, daily loss limit, daily spend cap, max positions, stop loss, take profit, fresh whale signals
-- [x] **Task #15** — Whale position tracking: positions persisted to `whale_positions_state.json` between cycles; fresh entries (new this cycle) flagged as NEW in logs; fresh signals score 2 vs 1 in market boost; Discord alert when any whale opens a fresh position
+- [x] **Task #5** — Discord webhook notifications added (`DISCORD_WEBHOOK_URL` env var on Railway); fires on trade filled / FOK killed / fresh whale signals
+- [x] **Task #15** — Whale position tracking: positions persisted to `whale_positions_state.json` between cycles; fresh entries (new this cycle) flagged as NEW in logs; Discord alert when any whale opens a fresh position
 - [x] **Task #16** — Three-window whale leaderboard: fetch top 10 from today, weekly, and all-time; auto-detect if `window` param works; fall back to trade-feed time filtering. Up to 30 unique wallets watched per cycle. Leaderboard box shows all three windows.
-- [x] **Task #17** — Scrapped the AI market-scan pipeline (RAG filter, AI market selector, superforecaster, trade constructor) from the entry path. The bot now trades strictly off whale-leaderboard consensus (today/weekly/monthly/all-time) — buys the exact token whales hold, no YES/NO inference needed. Sizing scales with whale count + combined $ volume/profit (3%–10% of balance, fresh-signal 1.25x bonus). Drift cap tightened 40% → 20%. Daily spend/loss caps, max positions, cooldown, dedup, correlation filter, and stop-loss/take-profit position management are all unchanged. GPT is only still called for the take-profit re-eval in `maintain_positions`.
-- [x] **Task #18** — Full repo strip-down to leaderboard-only, zero unused code. Deleted entirely: `executor.py`, `prompts.py`, `creator.py` (+ `create_market` CLI cmd), `cron.py` (dead/broken, never imported), `chroma.py` (+ RAG CLI cmds), `news.py` (+ `get_relevant_news`), `data_enricher.py` (already-orphaned news/Twitter/Reddit/Wikipedia/Metaculus/Manifold/Google-Trends context fetcher), `search.py` (dead Tavily demo script), `gamma.py`, `agents/utils/` (objects.py + utils.py, both fully unused), `test_sources.py`, `tests/test.py`. Trimmed `polymarket.py` down to CLOB/balance/positions methods only (removed Gamma market/event scanning, `execute_market_order`, unused `ctf` contract setup). Trimmed `whale_tracker.py` (removed `get_market_holders`/`format_whale_context`/`_categorise`, only used by the now-deleted superforecaster prompt injection; removed dead `MIN_LEADERBOARD_PROFIT`/`MIN_WHALE_VOLUME` constants and unused `_parse_ts` helper). `cli.py` now has only `run_loop`/`run_autonomous_trader`. Made position management (`maintain_positions`) fully mechanical — removed the last AI call in the trading loop (`_reeval_position_probability`); take-profit is now an unconditional +60% price trigger, same as the -60% stop-loss, no market fetch or re-eval. **Bug found + fixed in passing:** `maintain_positions()` was defined but never called anywhere in the codebase (not in `cli.py`, not in `one_best_trade`) — stop-loss/take-profit had never actually run. Now called at the top of every `one_best_trade()` cycle. Bot has zero LLM/OpenAI dependency and only talks to `data-api.polymarket.com`, `clob.polymarket.com`, `polymarket.com` (leaderboard scrape), and Discord.
+- [x] **Task #17** — Scrapped the AI market-scan pipeline from the entry path — bot began trading strictly off whale-leaderboard consensus. (Superseded by Task #19 below, which removed the risk-management layer this task still had.)
+- [x] **Task #18** — Full repo strip-down to leaderboard-only, zero unused code (deleted `executor.py`, `prompts.py`, `creator.py`, `cron.py`, `chroma.py`, `news.py`, `data_enricher.py`, `search.py`, `gamma.py`, `agents/utils/`, tests; trimmed `polymarket.py`/`whale_tracker.py`; made position management mechanical). Also stripped repo-level scaffolding — `.github/` CI/templates, `CONTRIBUTING.md`, `.pre-commit-config.yaml`, `docs/`, unused `scripts/`, pruned `requirements.txt` 172→67 packages, rewrote `README.md`.
+- [x] **Task #19** — Removed ALL remaining risk management. Deleted `maintain_positions`/`_close_position`/stop-loss/take-profit entirely — the bot now never sells a position under any circumstance. Deleted daily loss floor, daily spend cap, max open positions, trade cooldown, and the keyword correlation filter. Sizing changed from scaled (3%–10% by whale count/volume) to a flat 25% of balance on every trade. Replaced the correlation filter with two narrow, explicit rules: never bet the exact same (market, side) twice, never bet the opposite side of a market already held — both checked against live positions + a new persistent `trader_trade_history.json` journal. Removed the price-drift cap from `whale_tracker.py` (still computed and displayed, just no longer gates a signal). Interval changed from 60min/30min-default to 15min. Removed now-dead `Polymarket.get_last_trade_minutes_ago`/`get_midpoint_price`/`get_held_token_ids`, and `trade_log.log_lesson`/`get_recent_lessons`/`FORECASTER_LOG_FILE` (fed by the now-deleted `maintain_positions`). State file renamed `trader_daily_state.json` → `trader_trade_history.json` (no more daily reset — it's a permanent trade journal now, not a per-day budget tracker). Verified the new dedup/opposite-outcome logic against 7 scripted scenarios (clean trade, same-bet-blocked, opposite-blocked, journal-fallback-blocked, second-signal-picked-when-first-blocked, balance-too-low, bumped-to-$1-minimum) before shipping.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
@@ -160,8 +167,10 @@ network is **None** (all blocked). To allow Polymarket API access:
 4. Without this, all `requests.get(...)` to Polymarket return 403
 
 ### Railway deployment
-- Container restarts don't lose state: `trader_daily_state.json` persists on Railway volume
-- Cooldown and dedup use live API calls so they survive restarts even without the file
+- **Update the Railway start command to `--interval-minutes 15`** — this repo change updated
+  `cli.py`'s default, but Railway's configured start command overrides the default and needs to
+  be updated manually in the Railway dashboard.
+- Container restarts don't lose state: `trader_trade_history.json` persists on Railway volume
 - Logs are collected by Railway's log aggregator — rapid-fire `print()` calls get reordered
   - **Fix**: batch entire log sections into single `print("\n".join([...]))` call
 
@@ -176,11 +185,10 @@ There is no market-scan pipeline flow line anymore — the whale leaderboard/sig
 Per-cycle summary box (single batched print):
 ```
   ┌─ CYCLE SUMMARY ───────────────────────────────────────
-  │  Balance : $9.40  (start $9.40)
-  │  Spent   : $0.00 / $2.82 daily cap
-  │  Positions: 3 / 5 max
+  │  Balance : $9.40
+  │  Positions: 3 open
   │  Score   : 0W - 0L - 0P  (0% win rate)  P&L: +$0.00  [0 pending]
-  │  Trades  : 1 attempts | 0 filled | 1 FOK killed | 0W 0L
+  │  Trades  : 1 attempts | 0 filled | 1 FOK killed
   └───────────────────────────────────────────────────────
 ```
 
@@ -193,8 +201,10 @@ Whale signals box (single batched print):
 
 Whale leaderboard box (single batched print):
 ```
-  ┌─ WHALE LEADERBOARD ── top N traders by all-time PnL
-  │   1.  $   566,239  LaBradfordSmith22
-  │   2.  $   ...
-  └─────────────────────────────────────────────────────
+  ┌─ WHALE LEADERBOARD ──────────────────────────────────────────────────────
+  │  TODAY   (unrealized): ...
+  │  WEEKLY  (7d profit):  ...
+  │  MONTHLY (30d profit): ...
+  │  ALL-TIME:             ...
+  └──────────────────────────────────────────────────────────────────────────
 ```

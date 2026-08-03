@@ -4,7 +4,6 @@
 .vscode
 __pycache__
 .DS_Store
-trader_daily_state.json
+trader_trade_history.json
 whale_positions_state.json
 trade_history.json
-forecaster_log.json

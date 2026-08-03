@@ -1,9 +1,10 @@
 """
-WhaleTracker — the bot's sole trade-signal source. Scrapes the top Polymarket
-leaderboard traders (today/weekly/monthly/all-time) and buckets their open
-positions into consensus signals: a (market, side) pair is a signal once
-MIN_WHALES_AGREE independent whales hold it within MAX_PRICE_DRIFT of their
-average entry.
+WhaleTracker — the bot's sole trade-signal source. Every cycle, scrapes the top 10
+traders on the Polymarket today/weekly/monthly/all-time profit leaderboards, notes
+every position each one is currently holding, and buckets those positions into
+consensus signals: a (market, side) pair is a signal once MIN_WHALES_AGREE
+independent whales hold it. No other filtering is applied — this is a pure
+observation of what the leaderboard is doing, not a risk-managed selection.
 
 Position tracking: whale positions are persisted to WHALE_STATE_FILE between cycles
 so fresh entries (new this cycle) can be distinguished from ongoing holds.
@@ -28,12 +29,9 @@ PM_HEADERS = {
 WHALE_STATE_FILE = "whale_positions_state.json"
 
 # Minimum current position value to count as meaningful smart-money signal
+# (not a risk rule — pure data hygiene, filters out dust positions that would
+# otherwise inflate the count of whales "agreeing" on a market)
 MIN_POSITION_VALUE = 50.0
-
-# Price drift cap — skip if price already moved >20% from whale's avg entry
-# (tightened from 40% now that whale consensus is the bot's sole trade signal —
-# only trade signals that are still close to the whales' actual entry price)
-MAX_PRICE_DRIFT = 0.20
 
 # Consensus threshold — require this many independent whales on the same side
 MIN_WHALES_AGREE = 2
@@ -266,8 +264,6 @@ class WhaleTracker:
             avg_cur   = (sum(d["cur_prices"]) / len(d["cur_prices"])
                          if d["cur_prices"] else avg_entry)
             drift = abs(avg_cur - avg_entry) / avg_entry if avg_entry > 0 else 1.0
-            if drift > MAX_PRICE_DRIFT:
-                continue
 
             total_vol = int(sum(d["whale_volumes"]))
             pos_key   = f"{asset}_{side}"
