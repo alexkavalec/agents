@@ -3,47 +3,50 @@
 ## Repo & Deploy
 - **Repo:** github.com/alexkavalec/agents (forked from Polymarket/agents)
 - **Host:** Railway, runs 24/7. Start command: `python cli.py run-loop --interval-minutes 60`
-- **Stack:** Python 3.9, py-clob-client-v2, OpenAI (GPT), Chroma RAG
+- **Stack:** Python 3.9, py-clob-client-v2, web3.py. **No LLM/AI dependency** — the bot is
+  purely mechanical, driven entirely by Polymarket leaderboard data.
 - **Branch for new work:** `claude/polymarket-trading-bot-*` → PR → squash merge to `main`
 
-## Key Files
-- `cli.py` — run-loop entry point
-- `agents/application/trade.py` — orchestration + ALL guardrails
-- `agents/connectors/whale_tracker.py` — leaderboard scraping + consensus signal generation (the bot's SOLE trade signal source)
-- `agents/application/executor.py` — OpenAI calls used by `maintain_positions` (take-profit re-eval) and by non-trading CLI commands (`ask_llm`, `create_market`, etc.); no longer used for entry decisions
-- `agents/polymarket/polymarket.py` — CLOB client wrapper, auth, balance, order execution
-- `agents/polymarket/gamma.py` — Gamma market metadata client (still used by `create_market`/`Creator`, not by the trading loop)
+## Key Files (the entire trading pipeline — nothing else remains)
+- `cli.py` — `run_loop` / `run_autonomous_trader` entry points only
+- `agents/application/trade.py` — `Trader`: orchestration, all guardrails, entry sizing,
+  and mechanical stop-loss/take-profit position management
+- `agents/connectors/whale_tracker.py` — leaderboard scraping + consensus signal generation
+  (the bot's SOLE trade signal source)
+- `agents/polymarket/polymarket.py` — CLOB client wrapper: auth, balance, positions, orders
+- `agents/memory/trade_log.py` / `agents/memory/scoreboard.py` — trade history + win/loss tracking
 
-## Current Architecture — whale-leaderboard-only (as of 2026-08-02)
-The bot no longer scans markets, runs RAG, or asks GPT to pick trades. Entry decisions
-come **strictly from Polymarket leaderboard consensus**. `Trader.one_best_trade()` each cycle:
+Everything else from the original fork (Gamma market scanner, Chroma RAG, OpenAI-based
+superforecaster/trade-constructor/market-selector, news/Twitter/Reddit/Wikipedia/Tavily
+enrichment, the `create_market`/`Creator` market-creation feature, and their CLI commands)
+has been **deleted**, not just disconnected — see git history if any of it needs resurrecting.
+The bot only ever calls Polymarket's own `data-api.polymarket.com` and `clob.polymarket.com`
+endpoints, plus a Discord webhook for notifications.
 
-1. **Guardrail pre-checks** — daily loss floor, daily spend cap, max open positions, cooldown (unchanged)
-2. **Whale scan** — `WhaleTracker.get_whale_signals()` scrapes the today/weekly/monthly/all-time
+## Current Architecture — whale-leaderboard-only, fully mechanical (as of 2026-08-03)
+There is no AI anywhere in the trading loop — no market scan, no RAG, no GPT probability
+estimate, no AI-gated exits. Entry AND exit decisions are both pure price/leaderboard logic.
+`Trader.one_best_trade()` each cycle:
+
+1. **Position management first** (`maintain_positions()`, now called at the top of every
+   cycle — previously defined but never invoked, now wired in) — unconditional -60% stop-loss
+   and unconditional +60% take-profit, both pure price triggers, no re-evaluation of any kind
+2. **Guardrail pre-checks** — daily loss floor, daily spend cap, max open positions, cooldown
+3. **Whale scan** — `WhaleTracker.get_whale_signals()` scrapes the today/weekly/monthly/all-time
    profit leaderboards (`polymarket.com/leaderboard/overall/{window}/profit`), pulls open positions
    for every unique trader across all four windows, and buckets them by `(token, side)`
-3. **Consensus signal** — a `(market, side)` bucket becomes a candidate signal only if
+4. **Consensus signal** — a `(market, side)` bucket becomes a candidate signal only if
    `MIN_WHALES_AGREE` (2+) independent whales hold it and price hasn't drifted more than
-   `MAX_PRICE_DRIFT` (20%, tightened from 40%) from their average entry
-4. **Signal selection** — signals are pre-sorted (fresh first, then whale count, then combined
+   `MAX_PRICE_DRIFT` (20%) from their average entry
+5. **Signal selection** — signals are pre-sorted (fresh first, then whale count, then combined
    $ volume/profit); the bot walks the list and picks the first signal not already held, not
    traded today, and not keyword-correlated with an existing open position
-5. **Sizing** — scales with signal strength: `count_factor` (whales agreeing, saturates at 5) and
+6. **Sizing** — scales with signal strength: `count_factor` (whales agreeing, saturates at 5) and
    `volume_factor` (combined $ profit/volume, saturates at $2M) are averaged into a fraction
    between `MIN_TRADE_FRACTION` (3%) and `MAX_TRADE_FRACTION` (10%); fresh signals (a whale that
    just opened this cycle) get a 1.25x bonus, still capped at 10%
-6. **Order executor** — buys the exact token the whales hold (no YES/NO inference needed —
+7. **Order executor** — buys the exact token the whales hold (no YES/NO inference needed —
    the whale's position tells us the side directly) via FOK market order if risk passes
-7. **Position management** (`maintain_positions`, unchanged) — still runs every cycle: unconditional
-   -60% stop-loss, +60% take-profit gated on a GPT re-eval showing edge has collapsed. This is the
-   one place GPT still runs in the trading loop.
-
-There is no AI market scan, RAG filter, AI market selector, superforecaster, or trade constructor
-in the entry path anymore — see git history on `agents/application/trade.py` /
-`agents/application/executor.py` for the old pipeline. `Executor`'s market-scanning methods
-(`filter_events_with_rag`, `map_filtered_events_to_markets`, `filter_markets`) still exist and are
-used by the unrelated `create_market` CLI command (`Creator` class) — do not remove them for that
-reason, but they are dead code for the trading loop itself.
 
 ---
 
@@ -70,50 +73,14 @@ and `/positions`) so guards survive Railway container restarts.
 
 ---
 
-## Future: Multi-Agent Architecture (saved for later)
+## Future: Multi-Agent Architecture — SUPERSEDED, do not build
 
-Multiple Claude agents can live in **one repo** and coordinate via shared state files.
-Each agent is just a Python class calling `anthropic.Anthropic()` with its own model + system prompt.
-The orchestrator (`trade.py`) calls them in sequence or in parallel via `asyncio`.
-
-### Proposed file layout
-```
-agents/
-  application/
-    trade.py              ← orchestrator (already exists)
-    executor.py           ← single agent today (gets split into below)
-    agents/
-      scanner.py          ← haiku, fast parallel market scanning
-      analyst.py          ← opus, deep per-market research
-      forecaster.py       ← opus, probability + confidence intervals
-      risk.py             ← opus, Kelly sizing + portfolio correlation
-      postmortem.py       ← haiku, scores past trades after resolution
-  memory/
-    trade_history.json    ← every trade logged with outcome
-    forecaster_log.json   ← postmortem feeds lessons back to forecaster
-```
-
-### Proposed agents
-
-| Agent | Model | Role |
-|---|---|---|
-| **Scanner** | `claude-haiku-4-5-20251001` | Parallel scanning across event categories |
-| **Analyst** | `claude-haiku-4-5-20251001` | Per-market research — news, base rates |
-| **Forecaster** | `claude-opus-4-7` | Probability with confidence intervals |
-| **Risk** | `claude-opus-4-7` | Kelly sizing, portfolio exposure, correlation |
-| **Executor** | — | Order placement (no LLM needed, pure logic) |
-| **Post-mortem** | `claude-haiku-4-5-20251001` | Scores predictions, writes to forecaster_log.json |
-
-### What multi-agent would fix vs today
-- **No post-mortem loop** — bot never learns from past trades; each cycle starts fresh
-- **No parallel research** — markets evaluated one at a time, sequentially
-- **No persistent memory** — no record of what worked/didn't across cycles
-- **Risk is if-statements** — not a reasoning agent, can't adapt to novel situations
-- **Single point of failure** — one GPT call chain, no cross-checking between agents
-
-### When to build it
-Wait until the single-agent pipeline is stable and trading correctly for ~1–2 weeks.
-The bottleneck right now is trade quality, not agent specialization.
+An earlier version of this doc proposed adding Scanner/Analyst/Forecaster/Risk/Post-mortem
+LLM agents on top of the trading loop. As of 2026-08-03 the direction reversed: the bot was
+explicitly stripped down to be **strictly leaderboard-driven with zero AI**, and all AI
+infrastructure (`executor.py`, `prompts.py`, Chroma, news/enrichment connectors) was deleted
+outright, not just disconnected. Do not resurrect the multi-agent plan without an explicit
+new decision from the user to reintroduce AI into the entry or exit path.
 
 ---
 
@@ -131,8 +98,8 @@ The bottleneck right now is trade quality, not agent specialization.
 - `TRADE_COOLDOWN_MINUTES = 55` — min gap between trades; reads activity API (survives redeploys)
 - Dedup — skips if token already held in open positions or already traded today (reads positions API)
 - Correlation filter — skips signals sharing ≥2 keywords with an existing open position's title
-- Position management (unchanged) — unconditional -60% stop-loss; +60% take-profit gated on GPT
-  re-eval showing edge has collapsed
+- Position management — unconditional -60% stop-loss and unconditional +60% take-profit, both
+  pure price triggers via `maintain_positions()` (no AI re-eval of any kind, no market fetch)
 - State file: `trader_daily_state.json` in project root
 
 ## Known Issues / To-Do
@@ -150,7 +117,8 @@ The bottleneck right now is trade quality, not agent specialization.
 - [x] **Task #15** — Whale position tracking: positions persisted to `whale_positions_state.json` between cycles; fresh entries (new this cycle) flagged as NEW in logs; fresh signals score 2 vs 1 in market boost; Discord alert when any whale opens a fresh position
 - [x] **Task #16** — Three-window whale leaderboard: fetch top 10 from today, weekly, and all-time; auto-detect if `window` param works; fall back to trade-feed time filtering. Up to 30 unique wallets watched per cycle. Leaderboard box shows all three windows.
 - [x] **Task #17** — Scrapped the AI market-scan pipeline (RAG filter, AI market selector, superforecaster, trade constructor) from the entry path. The bot now trades strictly off whale-leaderboard consensus (today/weekly/monthly/all-time) — buys the exact token whales hold, no YES/NO inference needed. Sizing scales with whale count + combined $ volume/profit (3%–10% of balance, fresh-signal 1.25x bonus). Drift cap tightened 40% → 20%. Daily spend/loss caps, max positions, cooldown, dedup, correlation filter, and stop-loss/take-profit position management are all unchanged. GPT is only still called for the take-profit re-eval in `maintain_positions`.
-- [ ] **Task #6** — Multi-agent architecture (see above — do after ~2 weeks of stable trading; less relevant now that entries are mechanical, but post-mortem/lesson loop could still improve the take-profit re-eval)
+- [x] **Task #18** — Full repo strip-down to leaderboard-only, zero unused code. Deleted entirely: `executor.py`, `prompts.py`, `creator.py` (+ `create_market` CLI cmd), `cron.py` (dead/broken, never imported), `chroma.py` (+ RAG CLI cmds), `news.py` (+ `get_relevant_news`), `data_enricher.py` (already-orphaned news/Twitter/Reddit/Wikipedia/Metaculus/Manifold/Google-Trends context fetcher), `search.py` (dead Tavily demo script), `gamma.py`, `agents/utils/` (objects.py + utils.py, both fully unused), `test_sources.py`, `tests/test.py`. Trimmed `polymarket.py` down to CLOB/balance/positions methods only (removed Gamma market/event scanning, `execute_market_order`, unused `ctf` contract setup). Trimmed `whale_tracker.py` (removed `get_market_holders`/`format_whale_context`/`_categorise`, only used by the now-deleted superforecaster prompt injection; removed dead `MIN_LEADERBOARD_PROFIT`/`MIN_WHALE_VOLUME` constants and unused `_parse_ts` helper). `cli.py` now has only `run_loop`/`run_autonomous_trader`. Made position management (`maintain_positions`) fully mechanical — removed the last AI call in the trading loop (`_reeval_position_probability`); take-profit is now an unconditional +60% price trigger, same as the -60% stop-loss, no market fetch or re-eval. **Bug found + fixed in passing:** `maintain_positions()` was defined but never called anywhere in the codebase (not in `cli.py`, not in `one_best_trade`) — stop-loss/take-profit had never actually run. Now called at the top of every `one_best_trade()` cycle. Bot has zero LLM/OpenAI dependency and only talks to `data-api.polymarket.com`, `clob.polymarket.com`, `polymarket.com` (leaderboard scrape), and Discord.
+- [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
 

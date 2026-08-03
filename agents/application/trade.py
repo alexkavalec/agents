@@ -1,7 +1,5 @@
-from agents.application.executor import Executor as Agent
 from agents.polymarket.polymarket import Polymarket
-from agents.memory.trade_log import log_trade, log_lesson, get_recent_lessons
-import shutil
+from agents.memory.trade_log import log_trade, log_lesson
 import os
 import json
 import re
@@ -50,11 +48,10 @@ _CORR_STOP = {
 }
 
 # Position management — thresholds before ANY action is even considered.
-# Small moves are completely ignored. AI re-evaluation is always required.
+# Small moves are completely ignored; both exits are unconditional price triggers.
 POSITION_REVIEW_MIN_MOVE    = 0.50   # ignore positions that moved < 50% — that's just noise
-POSITION_TAKE_PROFIT_GAIN   = 0.60   # consider taking profit if up >= 60%
-POSITION_STOP_LOSS_LOSS     = -0.60  # consider cutting if down >= 60%
-POSITION_ACTION_EDGE_MAX    = 0.08   # only act if AI now shows edge < 8% (thesis gone)
+POSITION_TAKE_PROFIT_GAIN   = 0.60   # close if up >= 60%
+POSITION_STOP_LOSS_LOSS     = -0.60  # close if down >= 60%
 # =========================================================================
 
 
@@ -72,7 +69,6 @@ def _discord(msg: str) -> None:
 class Trader:
     def __init__(self):
         self.polymarket = Polymarket()
-        self.agent = Agent()
 
     def _today(self) -> str:
         return datetime.date.today().isoformat()
@@ -106,16 +102,6 @@ class Trader:
         except Exception as e:
             print(f"WARN: could not save daily state: {e}")
 
-    def pre_trade_logic(self) -> None:
-        self.clear_local_dbs()
-
-    def clear_local_dbs(self) -> None:
-        for d in ("local_db_events", "local_db_markets"):
-            try:
-                shutil.rmtree(d)
-            except Exception:
-                pass
-
     def _extract_keywords(self, text: str) -> set:
         words = re.findall(r"[a-z0-9]+", text.lower())
         return {w for w in words if len(w) > 3 and w not in _CORR_STOP}
@@ -141,8 +127,6 @@ class Trader:
 
     def one_best_trade(self) -> None:
         try:
-            self.pre_trade_logic()
-
             try:
                 balance = float(self.polymarket.get_usdc_balance())
             except Exception as e:
@@ -151,6 +135,8 @@ class Trader:
             from agents.memory.trade_log import get_stats
             from agents.memory.scoreboard import resolve_completed, get_scoreboard_line
             resolve_completed(self.polymarket)
+
+            self.maintain_positions()
 
             state = self._load_state(balance)
             start_bal  = state["start_balance"]
@@ -384,20 +370,6 @@ class Trader:
             import traceback
             traceback.print_exc()
 
-    def _reeval_position_probability(self, question: str, description: str) -> float:
-        """Re-run superforecaster on an existing position. Returns p(YES) or None."""
-        try:
-            prompt = self.agent.prompter.superforecaster(question, description, ["Yes", "No"])
-            result = self.agent.llm.invoke(prompt)
-            m = re.search(r"likelihood\s*`?([0-9]*\.?[0-9]+)", result.content)
-            if m:
-                p = float(m.group(1))
-                print(f"  AI re-eval: p(Yes) = {p:.2f}")
-                return p
-        except Exception as e:
-            print(f"  Re-eval error: {e}")
-        return None
-
     def _close_position(self, token_id: str, size: float, reason: str, lesson_ctx: dict = None) -> None:
         """Sell the entire position via a market SELL order."""
         try:
@@ -433,8 +405,7 @@ class Trader:
                 outcome = "closed_profit" if lesson_ctx.get("pnl_pct", 0) > 0 else "closed_loss"
                 lesson = (
                     f"{reason} after {lesson_ctx.get('pnl_pct', 0):+.1%} move. "
-                    f"Held {lesson_ctx.get('side', '?')} at entry price {lesson_ctx.get('entry_price', 0):.3f}. "
-                    f"AI edge had collapsed — thesis confirmed broken."
+                    f"Held {lesson_ctx.get('side', '?')} at entry price {lesson_ctx.get('entry_price', 0):.3f}."
                 )
                 log_lesson(
                     question=lesson_ctx.get("question", ""),
@@ -448,9 +419,9 @@ class Trader:
             print(f"  {reason} sell failed: {e}")
 
     def maintain_positions(self) -> None:
-        """Review open positions each cycle.
-        Only exits when price has moved dramatically AND AI confirms the thesis is gone.
-        A small dip is never sufficient reason to close — the threshold is intentionally high."""
+        """Review open positions each cycle. Both exits are unconditional price
+        triggers — no AI re-eval. A small dip/gain is never sufficient reason to
+        close — the threshold is intentionally high."""
         try:
             positions = self.polymarket.get_open_positions()
             if not positions:
@@ -483,81 +454,31 @@ class Trader:
                 pnl_pct = (current_value - initial_value) / initial_value
                 print(f"  {title[:45]} [{outcome}] P&L: {pnl_pct:+.1%}")
 
-                # Gate 1: ignore anything under the minimum move threshold.
-                # This is intentional — small dips are noise, not a reason to exit.
+                # Gate: ignore anything under the minimum move threshold.
+                # This is intentional — small dips/gains are noise, not a reason to exit.
                 if abs(pnl_pct) < POSITION_REVIEW_MIN_MOVE:
                     continue
 
-                # STOP LOSS: close unconditionally — no AI re-eval.
-                # The AI has already been shown to override -60% losses with optimistic forecasts.
-                # At this loss level, the original thesis is broken regardless of AI opinion.
-                if pnl_pct <= POSITION_STOP_LOSS_LOSS:
-                    lesson_ctx = {
-                        "question": title,
-                        "side": outcome,
-                        "entry_price": avg_price,
-                        "pnl_pct": pnl_pct,
-                    }
-                    print(f"  STOP LOSS (unconditional): down {pnl_pct:+.1%} — closing without AI re-eval.")
-                    _discord(
-                        f"🔴 **STOP LOSS** — {outcome} {pnl_pct:+.1%}\n"
-                        f"> {title[:120]}"
-                    )
-                    self._close_position(asset, size, "STOP LOSS", lesson_ctx)
-                    continue
-
-                # TAKE PROFIT: only close if AI confirms edge has collapsed.
-                # Holding a winner that's still mispriced is fine.
-                if pnl_pct < POSITION_TAKE_PROFIT_GAIN:
-                    continue
-
-                print(f"  Take-profit threshold reached ({pnl_pct:+.1%}) — running AI re-evaluation...")
-                market_data = self.polymarket.get_market(asset)
-                if not market_data:
-                    print(f"  Could not fetch market data, holding.")
-                    continue
-
-                question    = market_data.get("question", "")
-                description = market_data.get("description", "")
-                if not question:
-                    continue
-
-                ai_p_yes = self._reeval_position_probability(question, description)
-                if ai_p_yes is None:
-                    print(f"  AI re-eval failed — holding.")
-                    continue
-
-                # Compute current edge for the side we hold
-                current_token_price = current_value / size
-                if outcome.lower() == "yes":
-                    current_edge = ai_p_yes - current_token_price
-                else:
-                    current_edge = (1.0 - ai_p_yes) - current_token_price
-
-                if abs(current_edge) >= POSITION_ACTION_EDGE_MAX:
-                    print(f"  AI still sees edge {current_edge:+.2f} — holding despite {pnl_pct:+.1%} gain.")
-                    continue
-
                 lesson_ctx = {
-                    "question": question,
+                    "question": title,
                     "side": outcome,
                     "entry_price": avg_price,
                     "pnl_pct": pnl_pct,
                 }
-                print(f"  TAKE PROFIT: up {pnl_pct:+.1%}, AI edge = {current_edge:+.2f} (closed)")
-                _discord(
-                    f"🟢 **TAKE PROFIT** — {outcome} {pnl_pct:+.1%}, AI edge collapsed to {current_edge:+.2f}\n"
-                    f"> {question[:120]}"
-                )
-                self._close_position(asset, size, "TAKE PROFIT", lesson_ctx)
+
+                if pnl_pct <= POSITION_STOP_LOSS_LOSS:
+                    print(f"  STOP LOSS: down {pnl_pct:+.1%} — closing.")
+                    _discord(f"🔴 **STOP LOSS** — {outcome} {pnl_pct:+.1%}\n> {title[:120]}")
+                    self._close_position(asset, size, "STOP LOSS", lesson_ctx)
+                elif pnl_pct >= POSITION_TAKE_PROFIT_GAIN:
+                    print(f"  TAKE PROFIT: up {pnl_pct:+.1%} — closing.")
+                    _discord(f"🟢 **TAKE PROFIT** — {outcome} {pnl_pct:+.1%}\n> {title[:120]}")
+                    self._close_position(asset, size, "TAKE PROFIT", lesson_ctx)
 
         except Exception as e:
             print(f"maintain_positions error: {e}")
             import traceback
             traceback.print_exc()
-
-    def incentive_farm(self):
-        pass
 
 
 if __name__ == "__main__":

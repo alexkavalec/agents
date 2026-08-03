@@ -1,23 +1,16 @@
 """
-WhaleTracker — discovers top Polymarket traders and surfaces their positions as
-smart-money signals.
-
-Two-stage approach:
-  1. Pre-selection: tries /v1/leaderboard (ranked by all-time PnL) first; if blocked,
-     falls back to /trades global feed scanning for largest recent dollar volumes.
-     Fetches open positions for top traders → consensus signals used to boost
-     whale-signalled markets and inject context into the superforecaster prompt.
-  2. Post-selection: /holders?market=CONDITION_ID → direct top-holder snapshot for the
-     specific market being analyzed, injected as a calibration block in the prompt.
+WhaleTracker — the bot's sole trade-signal source. Scrapes the top Polymarket
+leaderboard traders (today/weekly/monthly/all-time) and buckets their open
+positions into consensus signals: a (market, side) pair is a signal once
+MIN_WHALES_AGREE independent whales hold it within MAX_PRICE_DRIFT of their
+average entry.
 
 Position tracking: whale positions are persisted to WHALE_STATE_FILE between cycles
 so fresh entries (new this cycle) can be distinguished from ongoing holds.
 
 All endpoints are public — no API key required.
-  data-api.polymarket.com/v1/leaderboard — ranked leaderboard (profit/volume)
-  data-api.polymarket.com/trades         — recent global trade feed (fallback)
-  data-api.polymarket.com/positions      — open positions for a given address
-  data-api.polymarket.com/holders        — top holders for a given market (conditionId)
+  polymarket.com/leaderboard/overall/{window}/profit — SSR leaderboard pages (scraped)
+  data-api.polymarket.com/positions                  — open positions for a given address
 """
 
 import json
@@ -33,12 +26,6 @@ PM_HEADERS = {
     "Accept": "text/html",
 }
 WHALE_STATE_FILE = "whale_positions_state.json"
-
-# Minimum all-time profit to qualify as a true whale from the leaderboard ($50k+)
-MIN_LEADERBOARD_PROFIT = 200_000.0
-
-# Minimum dollar volume in recent trades to qualify as a whale (fallback path)
-MIN_WHALE_VOLUME = 1_000.0
 
 # Minimum current position value to count as meaningful smart-money signal
 MIN_POSITION_VALUE = 50.0
@@ -85,46 +72,6 @@ def _req(url: str, params: dict = None) -> object:
     except Exception:
         pass
     return None
-
-
-def _categorise(holder: dict, yes_list: list, no_list: list) -> None:
-    """Sort a holder dict into YES or NO bucket based on outcomeIndex or outcome field.
-    Stores dollar value (amount × price) so near-zero-price tokens don't skew counts."""
-    try:
-        amount = float(holder.get("amount", 0) or 0)
-    except (TypeError, ValueError):
-        amount = 0.0
-    if amount < 1.0:
-        return
-
-    # Weight by current token price so cheap YES/NO tokens don't inflate counts
-    try:
-        price = float(holder.get("price", 0) or holder.get("currentPrice", 0) or 0)
-    except (TypeError, ValueError):
-        price = 0.0
-    # If price unavailable, use raw token count (degrades gracefully)
-    dollar_value = amount * price if price > 0 else amount
-
-    outcome_idx = holder.get("outcomeIndex")
-    outcome_str = (holder.get("outcome") or "").upper()
-
-    if outcome_idx == 0 or outcome_str in ("YES", "0"):
-        yes_list.append({"proxyWallet": holder.get("proxyWallet", ""), "amount": dollar_value})
-    elif outcome_idx == 1 or outcome_str in ("NO", "1"):
-        no_list.append({"proxyWallet": holder.get("proxyWallet", ""), "amount": dollar_value})
-
-
-def _parse_ts(val) -> float:
-    """Parse a timestamp value (unix int/float or ISO string) to a float epoch."""
-    if not val:
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-    try:
-        s = str(val).replace("Z", "+00:00")
-        return datetime.fromisoformat(s).timestamp()
-    except Exception:
-        return 0.0
 
 
 class WhaleTracker:
@@ -353,7 +300,6 @@ class WhaleTracker:
                 "price_drift":         round(drift, 4),
                 "whale_count":         count,
                 "whale_volume_total":  total_vol,
-                "whale_profit_total":  total_vol,  # backward compat alias
                 "new_whale_count":     new_whale_count,
                 "is_fresh":            new_whale_count > 0,
                 "first_seen":          earliest_seen,
@@ -388,101 +334,3 @@ class WhaleTracker:
             sig_log.append(f"  └───────────────────────────────────────────────────────")
 
         return signals, "\n".join(lb_log), "\n".join(sig_log)
-
-    def get_market_holders(self, condition_id: str) -> str:
-        """
-        Fetch top holders for a specific market and return a formatted context block.
-        Called AFTER market selection — gives direct, accurate smart-money context
-        without needing a leaderboard or global scan.
-
-        Uses /holders?market=CONDITION_ID (limit 50).
-        Returns empty string if the endpoint is unavailable or data is thin.
-        """
-        if not condition_id:
-            return ""
-
-        data = _req(f"{DATA_API}/holders", {"market": condition_id, "limit": 50})
-        if not data:
-            return ""
-
-        yes_holders = []
-        no_holders  = []
-
-        entries = data if isinstance(data, list) else []
-        for item in entries:
-            if isinstance(item, dict) and "holders" in item:
-                # Nested shape: {token: "...", holders: [{proxyWallet, amount, outcomeIndex, ...}]}
-                for h in item.get("holders", []):
-                    _categorise(h, yes_holders, no_holders)
-            elif isinstance(item, dict) and "proxyWallet" in item:
-                # Flat shape: each item is a holder object
-                _categorise(item, yes_holders, no_holders)
-
-        if not yes_holders and not no_holders:
-            return ""
-
-        yes_total = sum(h["amount"] for h in yes_holders)
-        no_total  = sum(h["amount"] for h in no_holders)
-        grand     = yes_total + no_total or 1
-
-        lines = ["\nCURRENT MARKET HOLDER SNAPSHOT (largest position-holders right now):"]
-        if yes_holders:
-            lines.append(
-                f"  YES side: {len(yes_holders)} large holders, "
-                f"~${yes_total:,.0f} in position value"
-            )
-        if no_holders:
-            lines.append(
-                f"  NO side:  {len(no_holders)} large holders, "
-                f"~${no_total:,.0f} in position value"
-            )
-
-        dominant = "YES" if yes_total >= no_total else "NO"
-        lines.append(
-            f"  → Holder concentration leans {dominant} "
-            f"({yes_total / grand * 100:.0f}% YES / {no_total / grand * 100:.0f}% NO by $ value)"
-        )
-        lines.append(
-            "  Treat this as a secondary calibration signal — concentrated large holders"
-            " often have an information edge on the outcome.\n"
-        )
-        return "\n".join(lines)
-
-    def format_whale_context(self, question: str, signals: list) -> str:
-        """
-        Match pre-selection whale signals to the given market question by keyword overlap,
-        and return a formatted block to inject into the superforecaster prompt.
-        """
-        if not signals:
-            return ""
-
-        q_words = set(w.lower() for w in question.split() if len(w) > 3)
-
-        matched = []
-        for s in signals:
-            t_words = set(w.lower() for w in s["title"].split() if len(w) > 3)
-            if len(q_words & t_words) >= 2:
-                matched.append(s)
-
-        if not matched:
-            return ""
-
-        lines = ["\nSMART-MONEY SIGNAL — top leaderboard whales currently hold:"]
-        for s in matched:
-            drift_note = (
-                f"{s['price_drift']:.0%} drift from entry"
-                if s["price_drift"] > 0.02
-                else "very fresh — price barely moved"
-            )
-            lines.append(
-                f"  • {s['whale_count']} whale(s): {s['side'].upper()} "
-                f"@ avg entry {s['avg_entry']:.3f}  (market now {s['cur_price']:.3f}, {drift_note})"
-                f"  — combined profit/volume: ${s['whale_volume_total']:,}"
-            )
-        lines += [
-            "",
-            "  NOTE: these are top-ranked Polymarket traders by all-time profit.",
-            "  Weight this as a STRONG signal — these traders have demonstrated edge.",
-            "  Cross-reference with the holder snapshot and other context below.\n",
-        ]
-        return "\n".join(lines)
