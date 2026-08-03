@@ -30,6 +30,8 @@ def run_loop(interval_minutes: int = 15) -> None:
     Run autonomous trader in a continuous loop
     """
     import time
+    from agents.application.dashboard import start_dashboard
+    start_dashboard()
     while True:
         print("Starting trade cycle...")
         try:

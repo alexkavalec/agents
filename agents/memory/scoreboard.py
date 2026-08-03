@@ -123,8 +123,8 @@ def resolve_completed(polymarket_client) -> int:
     return resolved_count
 
 
-def get_scoreboard_line() -> str:
-    """Return a one-line scoreboard string."""
+def get_scoreboard_stats() -> dict:
+    """Return the win/loss record as structured data (used by get_scoreboard_line and the dashboard)."""
     history = _load()
     filled = [t for t in history if t.get("status") == "filled"]
 
@@ -136,14 +136,56 @@ def get_scoreboard_line() -> str:
     total_resolved = len(wins) + len(losses) + len(pushes)
     win_pct = (len(wins) / total_resolved * 100) if total_resolved > 0 else 0.0
 
-    total_pnl = sum(t.get("pnl_usd", 0) or 0 for t in filled
-                    if t.get("outcome") in ("win", "loss", "push"))
+    resolved  = [t for t in filled if t.get("outcome") in ("win", "loss", "push")]
+    total_pnl = sum(t.get("pnl_usd", 0) or 0 for t in resolved)
+    # ROI on resolved trades only — money still in open/pending positions isn't
+    # counted as staked yet, so it can't be counted as a return yet either.
+    total_staked = sum(t.get("amount_usd", 0) or 0 for t in resolved)
+    roi_pct = (total_pnl / total_staked * 100) if total_staked > 0 else 0.0
 
-    pnl_str = f"+${total_pnl:.2f}" if total_pnl >= 0 else f"-${abs(total_pnl):.2f}"
+    return {
+        "wins": len(wins),
+        "losses": len(losses),
+        "pushes": len(pushes),
+        "pending": len(pending),
+        "win_pct": round(win_pct, 1),
+        "total_pnl": round(total_pnl, 2),
+        "total_staked": round(total_staked, 2),
+        "roi_pct": round(roi_pct, 1),
+    }
 
+
+def get_pnl_timeseries() -> list:
+    """Cumulative realized PnL over time, one point per resolved trade in
+    chronological order — the data behind the dashboard's profit chart."""
+    history = _load()
+    resolved = [
+        t for t in history
+        if t.get("status") == "filled"
+        and t.get("outcome") in ("win", "loss", "push")
+        and t.get("resolved_at")
+    ]
+    resolved.sort(key=lambda t: t["resolved_at"])
+
+    points = []
+    cumulative = 0.0
+    for t in resolved:
+        cumulative += float(t.get("pnl_usd", 0) or 0)
+        points.append({
+            "date": t["resolved_at"],
+            "cumulative_pnl": round(cumulative, 2),
+            "question": t.get("question", ""),
+        })
+    return points
+
+
+def get_scoreboard_line() -> str:
+    """Return a one-line scoreboard string."""
+    s = get_scoreboard_stats()
+    pnl_str = f"+${s['total_pnl']:.2f}" if s['total_pnl'] >= 0 else f"-${abs(s['total_pnl']):.2f}"
     return (
-        f"  │  Score   : {len(wins)}W - {len(losses)}L - {len(pushes)}P  "
-        f"({win_pct:.0f}% win rate)  P&L: {pnl_str}  [{len(pending)} pending]"
+        f"  │  Score   : {s['wins']}W - {s['losses']}L - {s['pushes']}P  "
+        f"({s['win_pct']:.0f}% win rate)  P&L: {pnl_str}  [{s['pending']} pending]"
     )
 
 

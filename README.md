@@ -49,6 +49,7 @@ Fill in `.env`:
 - `CLOB_API_KEY` / `CLOB_API_SECRET` / `CLOB_API_PASSPHRASE` — optional, derived automatically if unset
 - `POLYGON_FUNDER_ADDRESS` / `POLYGON_RPC_URL` — optional
 - `DISCORD_WEBHOOK_URL` — optional, notifications for fills and FOK kills
+- `DASHBOARD_TOKEN` — optional but recommended, protects the stats dashboard (see below)
 
 Fund the wallet with USDC on Polygon, then run:
 
@@ -59,11 +60,29 @@ python cli.py run-loop --interval-minutes 15
 **Warning:** this bot has no downside protection whatsoever. It bets 25% of its balance on every
 signal and never sells a losing position. Only fund it with money you're fully prepared to lose.
 
+## Stats dashboard
+
+`run-loop` also starts a tiny read-only web dashboard (stdlib `http.server`, no extra
+dependencies) alongside the trading loop. It listens on `$PORT` (defaults to 8080
+locally) and refreshes itself every 60 seconds. Visit `/`, or `/?key=...` if
+`DASHBOARD_TOKEN` is set — without a token the dashboard is publicly readable to
+anyone with the URL, so set one before exposing it. Data also available as JSON at
+`/api/stats`.
+
+Shows:
+- Balance, open positions, win/loss record, ROI%, and a P&L chart (all live/updated
+  every poll)
+- The 4 whale leaderboards (today/weekly/monthly/all-time) and every open position
+  each tracked whale currently holds — this part only refreshes as often as the bot's
+  own 15-minute cycle runs (it reads a cache the bot writes; the dashboard polling
+  faster than that doesn't trigger extra scraping)
+
 ## Deployment
 
 Runs 24/7 on [Railway](https://railway.app) with the same start command above. The `Dockerfile`
 installs `requirements.txt`; the actual run command is configured as the Railway service's start
-command, not baked into the image.
+command, not baked into the image. Enable "Public Networking" on the Railway service to get a
+URL for the dashboard.
 
 ## License
 
