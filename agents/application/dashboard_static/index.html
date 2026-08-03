@@ -71,8 +71,9 @@
   #trades-table td:nth-child(2) { white-space: normal; min-width: 180px; }
   #trades-table th:nth-child(4), #trades-table td:nth-child(4),
   #trades-table th:nth-child(7), #trades-table td:nth-child(7) { text-align: right; font-variant-numeric: tabular-nums; }
-  #whale-positions-table td:nth-child(3) { white-space: normal; min-width: 180px; }
-  #whale-positions-table th:nth-child(5), #whale-positions-table td:nth-child(5) { text-align: right; font-variant-numeric: tabular-nums; }
+  #whale-positions-table td:nth-child(4) { white-space: normal; min-width: 180px; }
+  #whale-positions-table th:nth-child(2), #whale-positions-table td:nth-child(2),
+  #whale-positions-table th:nth-child(6), #whale-positions-table td:nth-child(6) { text-align: right; font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: none; }
   tbody tr { transition: background-color 120ms ease; }
   tbody tr:hover { background: rgba(255,255,255,0.025); }
@@ -83,6 +84,8 @@
   .outcome-win { color: var(--green); font-weight: 600; }
   .outcome-loss { color: var(--red); font-weight: 600; }
   .outcome-pending { color: var(--muted); }
+  .pnl-pos { color: var(--green); }
+  .pnl-neg { color: var(--red); }
   .empty {
     color: var(--muted); font-size: 13px; padding: 22px 12px; text-align: center;
     border: 1px dashed var(--border); border-radius: 8px;
@@ -186,7 +189,7 @@
     <div class="panel scroll scroll-y">
       <table id="whale-positions-table">
         <thead>
-          <tr><th>Trader</th><th>Lists</th><th>Market</th><th>Side</th><th>Value</th></tr>
+          <tr><th>Trader</th><th>Weekly P&amp;L</th><th>Lists</th><th>Market</th><th>Side</th><th>Value</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -204,7 +207,7 @@ let lastData = null;
 function fmtUsd(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
   const sign = n < 0 ? "-" : "";
-  return sign + "$" + Math.abs(n).toFixed(2);
+  return sign + "$" + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function fmtCompactUsd(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
@@ -229,6 +232,16 @@ function fmtDateShort(iso) {
   try {
     return new Date(iso + (iso.endsWith("Z") ? "" : "Z")).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   } catch (e) { return iso; }
+}
+function displayName(row) {
+  const addr = row && row.address;
+  const name = row && row.name;
+  // Show a short address (0x353563…7893d) when there's no real pseudonym —
+  // covers both a bare full address and the backend's own address[:10]+"..." fallback.
+  if (addr && /^0x[a-fA-F0-9]{10,}$/.test(addr) && (!name || /^0x/i.test(name))) {
+    return addr.slice(0, 8) + "…" + addr.slice(-4);
+  }
+  return name || (addr ? addr.slice(0, 8) + "…" + addr.slice(-4) : "—");
 }
 function sideClass(side) {
   const s = (side || "").toLowerCase();
@@ -375,7 +388,7 @@ function renderLeaderboards(leaderboards) {
   wrap.innerHTML = cols.map(c => {
     const rows = (leaderboards[c.key] || []).map((t, i) => `
       <div class="lb-row">
-        <span class="lb-name"><span class="lb-rank">${i + 1}</span>${escapeHtml(t.name)}</span>
+        <span class="lb-name"><span class="lb-rank">${i + 1}</span>${escapeHtml(displayName(t))}</span>
         <span class="lb-profit">${fmtCompactUsd(t.profit)}</span>
       </div>
     `).join("");
@@ -390,7 +403,7 @@ function renderWhalePositions(traders) {
   const rows = [];
   (traders || []).forEach(t => {
     (t.positions || []).forEach(p => {
-      rows.push({ trader: t.name, windowList: t.windows || [], ...p });
+      rows.push({ trader: displayName(t), weeklyPnl: t.weekly_pnl, windowList: t.windows || [], ...p });
     });
   });
   rows.sort((a, b) => (b.value || 0) - (a.value || 0));
@@ -399,6 +412,7 @@ function renderWhalePositions(traders) {
   body.innerHTML = rows.map(r => `
     <tr>
       <td>${escapeHtml(r.trader)}</td>
+      <td class="${r.weeklyPnl === null || r.weeklyPnl === undefined ? "" : (r.weeklyPnl >= 0 ? "pnl-pos" : "pnl-neg")}">${fmtUsd(r.weeklyPnl)}</td>
       <td>${windowBadges(r.windowList)}</td>
       <td>${escapeHtml(r.title || "")}</td>
       <td class="${sideClass(r.side)}">${escapeHtml(r.side || "")}</td>

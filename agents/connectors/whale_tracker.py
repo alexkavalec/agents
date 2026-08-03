@@ -243,16 +243,18 @@ class WhaleTracker:
         }
 
         # Combine all four windows, deduplicate by address — track every window
-        # a trader appears on (for the dashboard), not just the first one found
+        # a trader appears on AND their profit in each one (for the dashboard),
+        # not just the first window found
         by_addr: dict = {}
         for window, lst in (("all_time", alltime), ("monthly", monthly),
                              ("weekly", weekly), ("today", today)):
             for t in lst:
                 addr = t["address"]
                 if addr not in by_addr:
-                    by_addr[addr] = {**t, "windows": [window]}
+                    by_addr[addr] = {**t, "windows": [window], "window_profit": {window: t["volume"]}}
                 else:
                     by_addr[addr]["windows"].append(window)
+                    by_addr[addr]["window_profit"][window] = t["volume"]
         traders: list = list(by_addr.values())
 
         if not traders:
@@ -316,6 +318,7 @@ class WhaleTracker:
                     "name": trader["name"] or trader["address"][:10] + "...",
                     "address": trader["address"],
                     "windows": trader["windows"],
+                    "weekly_pnl": trader.get("window_profit", {}).get("weekly"),
                     "positions": sorted(trader_positions, key=lambda p: p["value"], reverse=True),
                 })
 
