@@ -1,5 +1,6 @@
 from agents.polymarket.polymarket import Polymarket
-from agents.memory.trade_log import log_trade
+from agents.memory.trade_log import log_trade, count_filled_today
+from agents.application.overrides import load_overrides
 import os
 import json
 import requests as _requests
@@ -18,6 +19,11 @@ import requests as _requests
 # no take-profit, no daily loss/spend cap, no max open positions, no
 # cooldown, no price-drift filter, no correlation filter. Positions are
 # held forever once opened; the bot never sells.
+#
+# The dashboard's chat box (chat.py) can adjust three of these mechanical
+# knobs for the rest of the current UTC day — see overrides.py — but it
+# never picks markets or sizes trades on its own judgment; every override
+# still flows through the same signal/eligibility pipeline below.
 # =========================================================================
 BET_FRACTION = 0.25   # the only sizing rule: 25% of current balance, every trade
 ABSOLUTE_MIN_TRADE = 1.0   # Polymarket's own order minimum (~$1) — an exchange
@@ -110,6 +116,26 @@ class Trader:
                 "",
             ]))
 
+            # ── CHAT OVERRIDES — see overrides.py. All three expire at UTC midnight
+            # and never bypass rules 4/5 (dedup, no opposite side); they only adjust
+            # which signals are considered and how big the resulting trade is. ──
+            overrides = load_overrides()
+            override_notes = []
+            if overrides.get("focus_trader"):
+                override_notes.append(f"focus={overrides['focus_trader']['name']}")
+            if overrides.get("trade_count_cap") is not None:
+                override_notes.append(f"cap={overrides['trade_count_cap']}/day")
+            if overrides.get("size_override_usd") is not None:
+                override_notes.append(f"size=${overrides['size_override_usd']:.2f}")
+            if override_notes:
+                print(f"  ⚙ Active chat override(s): {', '.join(override_notes)}", flush=True)
+
+            if overrides.get("trade_count_cap") is not None:
+                filled_today = count_filled_today()
+                if filled_today >= overrides["trade_count_cap"]:
+                    print(f"  ✗ Chat trade-count cap reached ({filled_today}/{overrides['trade_count_cap']} today). Skipping.", flush=True)
+                    return
+
             # ── WHALE SCAN — the sole source of trade signals ──────────────────
             # Top 10 traders on the today/weekly/monthly/all-time leaderboards, their
             # weekly profit record, and every open position they hold, printed in full
@@ -135,6 +161,15 @@ class Trader:
             except Exception as e:
                 print(f"  ✗ WhaleTracker error — no signal source available. Skipping. ({e})")
                 return
+
+            # Focus mode replaces the signal source entirely with just this one whale's
+            # current positions — bypassing MIN_WHALES_AGREE and rule 6 (both are the
+            # whole point of "copy only this guy today"), but not rules 4/5 below.
+            if overrides.get("focus_trader"):
+                focus_signals = self._focus_trader_signals(overrides["focus_trader"])
+                print(f"  ⚙ Focus mode: {len(focus_signals)} position(s) found for "
+                      f"{overrides['focus_trader']['name']} this cycle.", flush=True)
+                whale_signals = focus_signals
 
             if not whale_signals:
                 print("  ✗ No whale consensus signals this cycle. Skipping.")
@@ -185,7 +220,14 @@ class Trader:
                 print(f"  ✗ No eligible whale signal this cycle{extra}. Skipping.")
                 return
 
-            trade_amount = balance * BET_FRACTION
+            size_override = overrides.get("size_override_usd")
+            if size_override is not None:
+                trade_amount = size_override
+                if trade_amount > balance:
+                    print(f"  ⚠ Chat size override (${size_override:.2f}) exceeds balance (${balance:.2f}) — using full balance instead.", flush=True)
+                    trade_amount = balance
+            else:
+                trade_amount = balance * BET_FRACTION
             if trade_amount < ABSOLUTE_MIN_TRADE:
                 if balance >= ABSOLUTE_MIN_TRADE:
                     trade_amount = ABSOLUTE_MIN_TRADE
@@ -193,9 +235,11 @@ class Trader:
                     print(f"  ✗ Balance ${balance:.2f} too low to place the ${ABSOLUTE_MIN_TRADE} minimum order. Skipping.", flush=True)
                     return
 
+            size_label = f"chat override, ${size_override:.2f}/trade" if size_override is not None else f"25% of ${balance:.2f} balance"
+
             filled = False
             for i, candidate in enumerate(eligible):
-                if self._attempt_trade(candidate, trade_amount, balance):
+                if self._attempt_trade(candidate, trade_amount, size_label):
                     filled = True
                     break
                 if i < len(eligible) - 1:
@@ -209,7 +253,42 @@ class Trader:
             import traceback
             traceback.print_exc()
 
-    def _attempt_trade(self, candidate: dict, trade_amount: float, balance: float) -> bool:
+    def _focus_trader_signals(self, trader: dict) -> list:
+        """Build ad-hoc single-whale signals from a chat-focused trader's current
+        positions — same shape as WhaleTracker.get_whale_signals() output, but
+        whale_count is always 1 (MIN_WHALES_AGREE doesn't apply here) and
+        is_today_event is always True (rule 6 doesn't apply here either) since
+        both are exactly what "copy only this guy today" is asking to bypass."""
+        from agents.connectors.whale_tracker import WhaleTracker, MIN_POSITION_VALUE
+        try:
+            positions = WhaleTracker().get_positions(trader["address"])
+        except Exception:
+            return []
+
+        signals = []
+        for pos in positions:
+            asset     = pos.get("asset", "")
+            side      = pos.get("outcome", "") or pos.get("side", "")
+            avg_price = float(pos.get("avgPrice", 0) or 0)
+            cur_price = float(pos.get("curPrice", pos.get("currentValue", 0)) or 0)
+            if not asset or avg_price <= 0:
+                continue
+            size = float(pos.get("size", 0) or 0)
+            cur_val = float(pos.get("currentValue", 0) or 0) or (cur_price * size)
+            if cur_val < MIN_POSITION_VALUE:
+                continue
+            signals.append({
+                "title": pos.get("title", asset[:30]), "asset": asset, "side": side,
+                "avg_entry": round(avg_price, 4), "cur_price": round(cur_price, 4),
+                "price_drift": round(abs(cur_price - avg_price) / avg_price, 4) if avg_price else 0.0,
+                "whale_count": 1, "whale_volume_total": 0,
+                "new_whale_count": 0, "is_fresh": False, "first_seen": "",
+                "end_date": (pos.get("endDate") or "")[:10],
+                "is_today_event": True,
+            })
+        return signals
+
+    def _attempt_trade(self, candidate: dict, trade_amount: float, size_label: str) -> bool:
         """Try to place a FOK BUY for one whale signal. Returns True on fill."""
         question    = candidate["title"]
         token_id    = candidate["asset"]
@@ -233,7 +312,7 @@ class Trader:
             print("  ✗ Signal had no token ID — skipping.")
             return False
 
-        print(f"  Size: ${trade_amount:.2f}  (25% of ${balance:.2f} balance)")
+        print(f"  Size: ${trade_amount:.2f}  ({size_label})")
         print(f"  Placing BUY {trade_side} — ${trade_amount:.2f}  token: {token_id[:20]}...")
         from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
         order_args = MarketOrderArgs(

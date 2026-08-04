@@ -1,9 +1,11 @@
 # Polymarket Whale-Leaderboard Trading Bot
 
 An autonomous trading bot for [Polymarket](https://polymarket.com) that trades **strictly off
-the public leaderboard** — no AI, no market scanning, no news/RAG enrichment, and no risk
-management beyond 6 explicit rules. It watches the top 10 traders on the today / weekly /
-monthly / all-time leaderboards and copies their consensus moves.
+the public leaderboard** — no market scanning, no news/RAG enrichment, and no risk management
+beyond 6 explicit rules. It watches the top 10 traders on the today / weekly / monthly / all-time
+leaderboards and copies their consensus moves. The trading logic itself has no AI in it; the
+dashboard's chat box optionally uses Claude to parse plain-English requests into a few specific
+parameter overrides (see Chat box below) — it never picks markets or trades on its own.
 
 See [`CLAUDE.md`](./CLAUDE.md) for the full architecture and change history.
 
@@ -55,6 +57,8 @@ Fill in `.env`:
 - `DASHBOARD_TOKEN` — optional but recommended, protects the stats dashboard (see below)
 - `DATA_DIR` — optional but recommended on Railway, points state files at a mounted Volume so
   trade history survives redeploys (see Deployment below)
+- `ANTHROPIC_API_KEY` — required for the dashboard's chat box (see Chat box below); the bot's
+  own trading loop works fine without it
 
 Fund the wallet with USDC on Polygon, then run:
 
@@ -81,6 +85,22 @@ Shows:
   detail modal with their weekly P&L and every open position they currently hold. This
   part only refreshes as often as the bot's own 15-minute cycle runs (it reads a cache
   the bot writes; the dashboard polling faster than that doesn't trigger extra scraping)
+
+## Chat box
+
+Type plain English into the dashboard's Assistant panel to adjust today's trading — it can only
+do three things, and nothing takes effect until you click **Confirm**:
+
+- `"copy only tony today"` — for the rest of the day, only that one whale's positions count as
+  signals (bypasses the normal 2+ whale consensus requirement for them specifically)
+- `"only do 10 trades today"` — stop trading once 10 trades have filled today
+- `"do 1 trade of $20 today"` — size today's trade(s) at a flat $20 instead of 25% of balance
+  (parsed as a 1-trade cap + $20 size together, not a specific hand-picked market)
+
+Everything resets automatically at UTC midnight, or click **Clear all** to cancel early. Claude
+never sees market data and never picks a market or places a trade — it only maps your message to
+these three fields; every actual trade still goes through the same signal/eligibility pipeline
+above. Requires `ANTHROPIC_API_KEY`.
 
 ## Deployment
 

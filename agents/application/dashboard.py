@@ -23,6 +23,7 @@ from agents.polymarket.polymarket import Polymarket
 from agents.memory.trade_log import get_stats, TRADE_HISTORY_FILE
 from agents.memory.scoreboard import get_scoreboard_stats, get_pnl_timeseries
 from agents.connectors.whale_tracker import WHALE_CACHE_FILE, WhaleTracker
+from agents.application import chat, overrides
 
 _ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
@@ -87,7 +88,50 @@ def _build_stats() -> dict:
         "whale_last_updated": whale_cache.get("last_updated"),
         "whale_leaderboards": whale_cache.get("leaderboards", {}),
         "whale_traders": whale_cache.get("traders", []),
+        "active_overrides": overrides.load_overrides(),
     }
+
+
+def _validate_proposal(data: dict):
+    """Re-validate a chat-proposed override before writing it to disk on confirm —
+    the frontend round-trips the proposal it was shown, but the server doesn't
+    trust it blindly. Returns (clean_fields, error_message_or_None)."""
+    if not isinstance(data, dict):
+        return {}, "invalid payload"
+    fields = {}
+
+    ft = data.get("focus_trader")
+    if ft is not None:
+        if not isinstance(ft, dict) or not _ADDRESS_RE.match(str(ft.get("address", ""))):
+            return {}, "invalid focus_trader"
+        fields["focus_trader"] = {
+            "address": ft["address"],
+            "name": str(ft.get("name") or ft["address"][:10] + "...")[:60],
+        }
+
+    cap = data.get("trade_count_cap")
+    if cap is not None:
+        try:
+            cap = int(cap)
+        except (TypeError, ValueError):
+            return {}, "invalid trade_count_cap"
+        if not (0 < cap <= 1000):
+            return {}, "trade_count_cap out of range"
+        fields["trade_count_cap"] = cap
+
+    size = data.get("size_override_usd")
+    if size is not None:
+        try:
+            size = float(size)
+        except (TypeError, ValueError):
+            return {}, "invalid size_override_usd"
+        if not (0 < size <= 1_000_000):
+            return {}, "size_override_usd out of range"
+        fields["size_override_usd"] = round(size, 2)
+
+    if not fields:
+        return {}, "no valid override fields in payload"
+    return fields, None
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -129,6 +173,38 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
         elif path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", _INDEX_HTML)
+        else:
+            self._send(404, "text/plain; charset=utf-8", b"Not found")
+
+    def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        if not self._authorized():
+            self._send(401, "text/plain; charset=utf-8", b"Unauthorized")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            data = json.loads(raw or b"{}")
+        except Exception:
+            self._send(400, "application/json", json.dumps({"error": "invalid JSON body"}).encode())
+            return
+
+        if path == "/api/chat":
+            message = str(data.get("message", ""))[:2000]
+            try:
+                whale_cache = _load_whale_cache()
+                result = chat.handle_message(message, whale_cache.get("traders", []))
+                self._send(200, "application/json", json.dumps(result).encode())
+            except Exception as e:
+                self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
+        elif path == "/api/overrides/confirm":
+            fields, err = _validate_proposal(data)
+            if err:
+                self._send(400, "application/json", json.dumps({"error": err}).encode())
+                return
+            self._send(200, "application/json", json.dumps(overrides.save_override(**fields)).encode())
+        elif path == "/api/overrides/clear":
+            self._send(200, "application/json", json.dumps(overrides.clear_overrides()).encode())
         else:
             self._send(404, "text/plain; charset=utf-8", b"Not found")
 
