@@ -96,6 +96,36 @@ def _req(url: str, params: dict = None) -> object:
     return None
 
 
+def _parse_position(pos: dict) -> dict:
+    """Extract + validate the fields both get_whale_signals()'s full scan and
+    get_live_positions()'s single-trader refresh need from one raw /positions
+    entry, applying the same MIN_POSITION_VALUE dust filter either way so a
+    position doesn't appear in one context and not the other. Returns None if
+    the position should be skipped."""
+    asset     = pos.get("asset", "")
+    side      = pos.get("outcome", "") or pos.get("side", "")
+    title     = pos.get("title", asset[:30])
+    avg_price = float(pos.get("avgPrice", 0) or 0)
+    cur_price = float(pos.get("curPrice", pos.get("currentValue", 0)) or 0)
+    end_date  = pos.get("endDate", "") or ""
+
+    if not asset or avg_price <= 0:
+        return None
+
+    size = float(pos.get("size", 0) or 0)
+    cur_val = float(pos.get("currentValue", 0) or 0) or (cur_price * size)
+    if cur_val < MIN_POSITION_VALUE:
+        return None
+
+    amount_traded = float(pos.get("initialValue", 0) or 0)
+    return {
+        "asset": asset, "title": title, "side": side,
+        "avg_price": avg_price, "cur_price": cur_price,
+        "end_date": end_date[:10], "size": size, "cur_val": cur_val,
+        "amount_traded": amount_traded,
+    }
+
+
 class WhaleTracker:
 
     # ------------------------------------------------------------------
@@ -221,6 +251,32 @@ class WhaleTracker:
             and not p.get("redeemable", False)
         ]
 
+    def get_live_positions(self, address: str) -> list:
+        """Fresh, on-demand snapshot of one trader's open positions — same shape
+        and same MIN_POSITION_VALUE dust filter as get_whale_signals()'s
+        per-trader positions, just for a single address and without any of the
+        leaderboard/consensus-signal work. Used by the dashboard's trader modal
+        to keep price/value fields moving every minute or so while it's open,
+        without waiting on (or triggering) the bot's own 15-minute full scan."""
+        try:
+            positions = self.get_positions(address)
+        except Exception:
+            return []
+        out = []
+        for pos in positions:
+            parsed = _parse_position(pos)
+            if parsed is None:
+                continue
+            out.append({
+                "title": parsed["title"], "side": parsed["side"],
+                "avg_price": round(parsed["avg_price"], 4), "cur_price": round(parsed["cur_price"], 4),
+                "size": round(parsed["size"], 2), "value": round(parsed["cur_val"], 2),
+                "amount_traded": round(parsed["amount_traded"], 2),
+                "to_win": round(parsed["size"] - parsed["amount_traded"], 2),
+                "end_date": parsed["end_date"],
+            })
+        return sorted(out, key=lambda p: p["value"], reverse=True)
+
     def get_trader_pnl_history(self, address: str, window: str = "1W") -> list:
         """
         Fetch a trader's own P&L-over-time chart data from Polymarket's public
@@ -330,18 +386,6 @@ class WhaleTracker:
         })
         trader_records: list = []  # per-trader position lists, for the dashboard
 
-        # Loaded up front (not just for the consensus-signal freshness check below)
-        # so every individual whale position — not only ones that reach 2+ whale
-        # consensus — can carry a "first_seen" date the dashboard shows as when we
-        # first noticed that whale in that position. Bot-observation-relative (if
-        # the bot was offline, first_seen reflects whenever it next scanned), but
-        # it's the only "when did they open this" signal Polymarket's API gives us
-        # short of pulling each whale's full trade history.
-        now = _now_iso()
-        prev_state    = _load_whale_state()
-        prev_pos      = prev_state.get("whale_positions", {})
-        new_state_pos: dict = {}  # will replace prev_pos in the saved file
-
         for trader in traders:
             try:
                 positions = self.get_positions(trader["address"])
@@ -350,58 +394,37 @@ class WhaleTracker:
 
             trader_positions = []
             for pos in positions:
-                asset     = pos.get("asset", "")
-                side      = pos.get("outcome", "") or pos.get("side", "")
-                title     = pos.get("title", asset[:30])
-                avg_price = float(pos.get("avgPrice", 0) or 0)
-                cur_price = float(pos.get("curPrice", pos.get("currentValue", 0)) or 0)
-                end_date  = pos.get("endDate", "") or ""
-
-                if not asset or avg_price <= 0:
+                parsed = _parse_position(pos)
+                if parsed is None:
                     continue
-
-                # Only count positions with meaningful dollar value
-                size = float(pos.get("size", 0) or 0)
-                cur_val = float(pos.get("currentValue", 0) or 0) or (cur_price * size)
-                if cur_val < MIN_POSITION_VALUE:
-                    continue
+                asset, side, title = parsed["asset"], parsed["side"], parsed["title"]
+                avg_price, cur_price = parsed["avg_price"], parsed["cur_price"]
+                end_date, size, cur_val = parsed["end_date"], parsed["size"], parsed["cur_val"]
+                amount_traded = parsed["amount_traded"]
 
                 key = (asset, side)
                 buckets[key]["title"]         = title
                 buckets[key]["asset"]         = asset
                 buckets[key]["side"]          = side
-                buckets[key]["end_date"]      = end_date[:10]  # "YYYY-MM-DD", drop any time part
+                buckets[key]["end_date"]      = end_date
                 buckets[key]["entries"].append(avg_price)
                 buckets[key]["cur_prices"].append(cur_price)
                 buckets[key]["whale_volumes"].append(trader["volume"])
                 buckets[key]["whale_addresses"].append(trader["address"])
 
-                # First time we've seen THIS whale in THIS position — carried over
-                # from last cycle's state if we already had it, else it's new as of now.
-                pos_key = f"{asset}_{side}"
-                prev_first = prev_pos.get(trader["address"], {}).get(pos_key, {}).get("first_seen")
-                first_seen = prev_first or now
-                new_state_pos.setdefault(trader["address"], {})[pos_key] = {
-                    "title": title, "side": side, "first_seen": first_seen,
-                }
-
                 # amount_traded (cost basis) and to_win (net profit if this resolves in
                 # their favor: size * $1 payout - cost) — same fields the dashboard shows
-                # for the bot's own Open Positions, now surfaced per whale position too
-                amount_traded = float(pos.get("initialValue", 0) or 0)
+                # for the bot's own Open Positions, now surfaced per whale position too.
+                # end_date is the market's own resolution/event date (Polymarket's
+                # "endDate") — answers "when does this actually happen", which is a
+                # separate question from freshness/first_seen (see signals below).
                 trader_positions.append({
                     "title": title, "side": side,
                     "avg_price": round(avg_price, 4), "cur_price": round(cur_price, 4),
                     "size": round(size, 2), "value": round(cur_val, 2),
                     "amount_traded": round(amount_traded, 2),
                     "to_win": round(size - amount_traded, 2),
-                    "first_seen": first_seen,
-                    # The market's own resolution/event date (Polymarket's "endDate") —
-                    # already scraped for the consensus-signal rule-6 check but never
-                    # attached to individual positions until now. This is what answers
-                    # "when does this actually happen", not first_seen (which only says
-                    # when the bot noticed the position).
-                    "end_date": end_date[:10],
+                    "end_date": end_date,
                 })
 
             if trader_positions:
@@ -414,6 +437,12 @@ class WhaleTracker:
                     "window_profit": trader.get("window_profit", {}),
                     "positions": sorted(trader_positions, key=lambda p: p["value"], reverse=True),
                 })
+
+        # Load previous state to detect new entries this cycle
+        now = _now_iso()
+        prev_state    = _load_whale_state()
+        prev_pos      = prev_state.get("whale_positions", {})
+        new_state_pos: dict = {}  # will replace prev_pos in the saved file
 
         signals = []
         for (asset, side), d in buckets.items():
@@ -430,17 +459,23 @@ class WhaleTracker:
             pos_key   = f"{asset}_{side}"
 
             # Freshness: count which whales are new to this position this cycle
-            # (new_state_pos is already fully populated from the position loop above —
-            # this just reads prev_pos, unchanged since before this cycle's scan, to see
-            # which of these whales weren't in it yet)
             new_whale_count = 0
             earliest_seen   = now
             for addr in d["whale_addresses"]:
                 prev_first = prev_pos.get(addr, {}).get(pos_key, {}).get("first_seen")
                 if prev_first is None:
                     new_whale_count += 1
-                elif prev_first < earliest_seen:
-                    earliest_seen = prev_first
+                else:
+                    if prev_first < earliest_seen:
+                        earliest_seen = prev_first
+                # Persist this whale's position with its original first_seen time
+                if addr not in new_state_pos:
+                    new_state_pos[addr] = {}
+                new_state_pos[addr][pos_key] = {
+                    "title":      d["title"],
+                    "side":       side,
+                    "first_seen": prev_first or now,
+                }
 
             signals.append({
                 "title":               d["title"],

@@ -194,6 +194,20 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, "application/json", json.dumps(points).encode())
             except Exception as e:
                 self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
+        elif path == "/api/trader-positions":
+            # Live per-trader refresh for the dashboard's open trader modal — a single
+            # lightweight /positions call, not a full leaderboard rescan, so it's cheap
+            # enough to poll every minute while the modal is open.
+            qs = parse_qs(urlparse(self.path).query)
+            address = qs.get("address", [""])[0]
+            if not _ADDRESS_RE.match(address):
+                self._send(400, "application/json", json.dumps({"error": "invalid address"}).encode())
+                return
+            try:
+                positions = WhaleTracker().get_live_positions(address)
+                self._send(200, "application/json", json.dumps(positions).encode())
+            except Exception as e:
+                self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
         elif path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", _INDEX_HTML)
         else:

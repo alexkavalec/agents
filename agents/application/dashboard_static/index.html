@@ -313,7 +313,14 @@
     <div class="scroll">
       <table id="modal-positions-table">
         <thead>
-          <tr><th>Market</th><th>Side</th><th>Traded</th><th>To Win</th><th>Avg</th><th>Now</th><th>Value</th><th>Event Date</th><th>Opened</th></tr>
+          <tr>
+            <th>Market</th><th>Side</th>
+            <th title="Dollar cost basis — what they actually put in">Traded</th>
+            <th title="Net profit if this resolves in their favor">To Win</th>
+            <th title="Average price per share they paid (entry price)">Avg</th>
+            <th title="Current market price per share">Now</th>
+            <th>Value</th><th>Event Date</th>
+          </tr>
         </thead>
         <tbody id="modal-positions-body"></tbody>
       </table>
@@ -555,28 +562,17 @@ function renderLeaderboards(leaderboards) {
 }
 
 // ---- Trader detail modal (opened by clicking a leaderboard row) ----
-function openTraderModal(address) {
-  if (!address) return;
-  const traders = (lastData && lastData.whale_traders) || [];
-  const t = traders.find(x => x.address === address) || { address, name: "", window_profit: {}, positions: [] };
-  const positions = t.positions || [];
+// Positions/prices are re-fetched fresh every POSITIONS_POLL_MS while the modal is
+// open (see startPositionsPolling below) — leaderboard rank/window-profit stays as
+// of the bot's last 15-minute scan, same as everywhere else on the dashboard.
+const POSITIONS_POLL_MS = 60000;
+
+function applyTraderPositions(positions) {
   const totalValue = positions.reduce((sum, p) => sum + (p.value || 0), 0);
-  const windowProfit = t.window_profit || {};
-
-  document.getElementById("modal-title").textContent = displayName(t);
-
-  const profitCards = WINDOW_ORDER
-    .filter(w => windowProfit[w] !== undefined && windowProfit[w] !== null)
-    .map(w => `
-      <div class="card">
-        <div class="label">${escapeHtml(WINDOW_LABELS[w])}</div>
-        <div class="value ${windowProfit[w] >= 0 ? "pos" : "neg"}" title="${escapeHtml(fmtUsd(windowProfit[w]))}">${fmtCompactUsd(windowProfit[w])}</div>
-      </div>
-    `);
-  document.getElementById("modal-stats").innerHTML = profitCards.join("") + `
-    <div class="card"><div class="label">Open Positions</div><div class="value">${positions.length}</div></div>
-    <div class="card"><div class="label">Total Value</div><div class="value" title="${escapeHtml(fmtUsd(totalValue))}">${fmtCompactUsd(totalValue)}</div></div>
-  `;
+  document.getElementById("modal-open-positions-value").textContent = positions.length;
+  const totalValueEl = document.getElementById("modal-total-value");
+  totalValueEl.textContent = fmtCompactUsd(totalValue);
+  totalValueEl.title = fmtUsd(totalValue);
 
   document.getElementById("modal-positions-empty").style.display = positions.length ? "none" : "block";
   document.getElementById("modal-positions-body").innerHTML = [...positions]
@@ -591,15 +587,69 @@ function openTraderModal(address) {
         <td>${fmtPrice(p.cur_price)}</td>
         <td class="${pnlClass(p.value, p.amount_traded)}">${fmtUsd(p.value)}</td>
         <td>${escapeHtml(fmtEventDate(p.end_date))}</td>
-        <td title="${escapeHtml(fmtTime(p.first_seen))}">${fmtDateShort(p.first_seen)}</td>
       </tr>
     `).join("");
+}
+
+function openTraderModal(address) {
+  if (!address) return;
+  const traders = (lastData && lastData.whale_traders) || [];
+  const t = traders.find(x => x.address === address) || { address, name: "", window_profit: {}, positions: [] };
+  const windowProfit = t.window_profit || {};
+
+  document.getElementById("modal-title").textContent = displayName(t);
+
+  const profitCards = WINDOW_ORDER
+    .filter(w => windowProfit[w] !== undefined && windowProfit[w] !== null)
+    .map(w => `
+      <div class="card">
+        <div class="label">${escapeHtml(WINDOW_LABELS[w])}</div>
+        <div class="value ${windowProfit[w] >= 0 ? "pos" : "neg"}" title="${escapeHtml(fmtUsd(windowProfit[w]))}">${fmtCompactUsd(windowProfit[w])}</div>
+      </div>
+    `);
+  document.getElementById("modal-stats").innerHTML = profitCards.join("") + `
+    <div class="card"><div class="label">Open Positions</div><div class="value" id="modal-open-positions-value"></div></div>
+    <div class="card"><div class="label">Total Value</div><div class="value" id="modal-total-value"></div></div>
+  `;
+
+  applyTraderPositions(t.positions || []);
 
   document.getElementById("trader-modal").classList.add("open");
 
   currentModalAddress = address;
   setActivePnlTab("1W");
   loadTraderPnl(address, "1W");
+  startPositionsPolling(address);
+}
+
+// Live position/price refresh while the modal's open — a single lightweight
+// /positions call per trader, not a full leaderboard rescan, so polling this
+// often doesn't add meaningful load. Stops as soon as the modal closes.
+let positionsPollTimer = null;
+let positionsRequestSeq = 0;
+function startPositionsPolling(address) {
+  stopPositionsPolling();
+  positionsPollTimer = setInterval(() => refreshTraderPositions(address), POSITIONS_POLL_MS);
+}
+function stopPositionsPolling() {
+  if (positionsPollTimer) {
+    clearInterval(positionsPollTimer);
+    positionsPollTimer = null;
+  }
+}
+function refreshTraderPositions(address) {
+  const seq = ++positionsRequestSeq;
+  const url = "/api/trader-positions?address=" + encodeURIComponent(address) +
+    (key ? ("&key=" + encodeURIComponent(key)) : "");
+  fetch(url)
+    .then(r => r.ok ? r.json() : null)
+    .then(positions => {
+      // Bail if the modal moved on to a different trader (or closed) since this
+      // request went out, or a newer refresh has already landed.
+      if (!positions || seq !== positionsRequestSeq || currentModalAddress !== address) return;
+      applyTraderPositions(positions);
+    })
+    .catch(() => {});
 }
 
 // Trader P&L chart — fetched on demand (not part of the cached whale scan) since it
@@ -645,6 +695,8 @@ document.getElementById("modal-pnl-tabs").addEventListener("click", e => {
 });
 function closeTraderModal() {
   document.getElementById("trader-modal").classList.remove("open");
+  stopPositionsPolling();
+  currentModalAddress = null;
 }
 document.getElementById("leaderboards").addEventListener("click", e => {
   const row = e.target.closest(".lb-row");
