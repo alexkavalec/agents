@@ -23,7 +23,7 @@ from agents.polymarket.polymarket import Polymarket
 from agents.memory.trade_log import get_stats, TRADE_HISTORY_FILE
 from agents.memory.scoreboard import get_scoreboard_stats, get_pnl_timeseries
 from agents.connectors.whale_tracker import WHALE_CACHE_FILE, WhaleTracker
-from agents.application import chat, overrides
+from agents.application import chat, overrides, trade
 
 _ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
@@ -134,6 +134,29 @@ def _validate_proposal(data: dict):
     return fields, None
 
 
+def _validate_manual_trade(data: dict):
+    """Re-validate a chat-proposed manual trade before executing it — same
+    round-trip-don't-trust principle as _validate_proposal above, just with
+    the added weight that confirming this one places a real order immediately."""
+    mt = data.get("manual_trade")
+    if not isinstance(mt, dict):
+        return {}, "invalid payload"
+    token_id = str(mt.get("token_id", "")).strip()
+    if not token_id:
+        return {}, "missing token_id"
+    try:
+        amount = float(mt.get("amount_usd"))
+    except (TypeError, ValueError):
+        return {}, "invalid amount"
+    if not (0 < amount <= 100_000):
+        return {}, "amount out of range"
+    market_title = str(mt.get("market_title", "")).strip()[:300]
+    side = str(mt.get("side", "")).strip()[:100]
+    if not market_title or not side:
+        return {}, "missing market_title or side"
+    return {"token_id": token_id, "amount_usd": round(amount, 2), "market_title": market_title, "side": side}, None
+
+
 class _Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         if not DASHBOARD_TOKEN:
@@ -191,9 +214,26 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/chat":
             message = str(data.get("message", ""))[:2000]
+            history = data.get("history") if isinstance(data.get("history"), list) else []
             try:
                 whale_cache = _load_whale_cache()
-                result = chat.handle_message(message, whale_cache.get("traders", []))
+                polymarket = Polymarket()
+                try:
+                    balance = float(polymarket.get_usdc_balance())
+                except Exception:
+                    balance = None
+                try:
+                    positions = polymarket.get_open_positions()
+                except Exception:
+                    positions = []
+                context = {
+                    "balance": balance,
+                    "open_positions_count": len(positions),
+                    "scoreboard": get_scoreboard_stats(),
+                    "active_overrides": overrides.load_overrides(),
+                    "whale_leaderboards": whale_cache.get("leaderboards", {}),
+                }
+                result = chat.handle_message(message, whale_cache.get("traders", []), context, history)
                 self._send(200, "application/json", json.dumps(result).encode())
             except Exception as e:
                 self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
@@ -205,6 +245,19 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", json.dumps(overrides.save_override(**fields)).encode())
         elif path == "/api/overrides/clear":
             self._send(200, "application/json", json.dumps(overrides.clear_overrides()).encode())
+        elif path == "/api/manual-trade/confirm":
+            fields, err = _validate_manual_trade(data)
+            if err:
+                self._send(400, "application/json", json.dumps({"error": err}).encode())
+                return
+            try:
+                polymarket = Polymarket()
+                result = trade.place_manual_trade(
+                    polymarket, fields["market_title"], fields["side"], fields["token_id"], fields["amount_usd"]
+                )
+                self._send(200, "application/json", json.dumps(result).encode())
+            except Exception as e:
+                self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
         else:
             self._send(404, "text/plain; charset=utf-8", b"Not found")
 

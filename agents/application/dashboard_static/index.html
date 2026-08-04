@@ -179,6 +179,11 @@
     border: 1px solid var(--accent); border-radius: 12px; padding: 12px 14px; font-size: 13px;
   }
   .chat-proposal .summary { margin-bottom: 10px; }
+  .chat-proposal .trade-details {
+    margin: 0 0 10px; padding: 8px 10px; background: rgba(255,255,255,0.03); border-radius: 8px;
+  }
+  .chat-proposal .td-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 3px 0; }
+  .chat-proposal .td-label { color: var(--muted); flex-shrink: 0; }
   .chat-proposal .actions { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12.5px; }
   .chat-proposal .actions button {
     border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer; border: none;
@@ -220,13 +225,13 @@
     <div class="panel">
       <div class="overrides-banner" id="overrides-banner" style="display:none;"></div>
       <div class="chat-log" id="chat-log">
-        <div class="chat-msg assistant">Hi — I can adjust three things about today's trading: copy one
-          specific trader only, cap the number of trades, or set a flat trade size. Try
-          "copy only tony today" or "cap 10 trades today, $20 each." I won't apply anything
-          until you confirm it.</div>
+        <div class="chat-msg assistant">Hey! Ask me about your balance, positions, or the whale
+          leaderboard, tell me to follow one trader today, cap how many trades happen, change the
+          bet size, or ask me to place a specific trade like "buy $30 of yes on the lakers game."
+          Nothing actually happens until you hit Confirm, so feel free to just ask around.</div>
       </div>
       <form class="chat-form" id="chat-form">
-        <input type="text" id="chat-input" placeholder="Ask me to adjust today's trading…" autocomplete="off">
+        <input type="text" id="chat-input" placeholder="Ask me anything…" autocomplete="off">
         <button type="submit">Send</button>
       </form>
     </div>
@@ -717,6 +722,8 @@ function renderOverridesBanner(ov) {
   });
 }
 
+let chatHistory = [];
+
 function appendChatMessage(role, text) {
   const log = document.getElementById("chat-log");
   const div = document.createElement("div");
@@ -724,21 +731,39 @@ function appendChatMessage(role, text) {
   div.textContent = text;
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
+  chatHistory.push({ role, content: text });
+  if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
 }
 
 function appendProposalCard(proposal) {
   const log = document.getElementById("chat-log");
   const div = document.createElement("div");
   div.className = "chat-proposal";
+
+  const mt = proposal.manual_trade;
+  const detailsHtml = mt ? `
+    <div class="trade-details">
+      <div class="td-row"><span class="td-label">Market</span><span>${escapeHtml(mt.market_title)}</span></div>
+      <div class="td-row"><span class="td-label">Side</span><span>${escapeHtml(mt.side)}</span></div>
+      <div class="td-row"><span class="td-label">Amount</span><span>${fmtUsd(mt.amount_usd)}</span></div>
+      <div class="td-row"><span class="td-label">Price</span><span>${fmtPrice(mt.price)}</span></div>
+    </div>
+  ` : "";
+
   div.innerHTML = `
     <div class="summary">${escapeHtml(proposal.summary || "")}</div>
+    ${detailsHtml}
     <div class="actions">
       <button type="button" class="confirm-btn">Confirm</button>
       <button type="button" class="cancel-btn">Cancel</button>
     </div>
   `;
   div.querySelector(".confirm-btn").addEventListener("click", () => {
-    const url = "/api/overrides/confirm" + (key ? ("?key=" + encodeURIComponent(key)) : "");
+    const confirmPath = mt ? "/api/manual-trade/confirm" : "/api/overrides/confirm";
+    const url = confirmPath + (key ? ("?key=" + encodeURIComponent(key)) : "");
+    div.querySelector(".confirm-btn").disabled = true;
+    div.querySelector(".cancel-btn").disabled = true;
+    div.querySelector(".actions").textContent = mt ? "Placing…" : "Applying…";
     fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -751,8 +776,12 @@ function appendProposalCard(proposal) {
           return;
         }
         div.classList.add("resolved");
-        div.querySelector(".actions").textContent = "✓ Applied.";
-        renderOverridesBanner(result);
+        if (mt) {
+          div.querySelector(".actions").textContent = (result.success ? "✓ " : "✗ ") + (result.message || "");
+        } else {
+          div.querySelector(".actions").textContent = "✓ Applied.";
+          renderOverridesBanner(result);
+        }
       })
       .catch(() => { div.querySelector(".actions").textContent = "Error confirming — try again."; });
   });
@@ -779,7 +808,7 @@ document.getElementById("chat-form").addEventListener("submit", e => {
   fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, history: chatHistory.slice(0, -1) }),
   })
     .then(r => r.json())
     .then(result => {
