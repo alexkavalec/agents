@@ -704,6 +704,27 @@ confirm-before-apply step stays even for manual trades; the user already had an
   correctly read the backfilled data end-to-end (`500/500` filled, record matching the positions
   fetched, consistent with this test wallet's known heavy loss bias from Task #33 — not a new bug,
   just what that wallet's real data looks like).
+- [x] **Task #45** — User looked at a whale's "Atlanta Braves vs. Chicago White Sox" position
+  showing "Jun 11, 2026" as its Event Date and asked "are these games completed already?" —
+  confirmed live against Gamma that the answer is no: the market is still `active`/not `closed`,
+  `acceptingOrders: true`, priced ~50/50 (49.5¢/50.5¢, genuinely undecided). Task #43's "always
+  trust the slug's date over endDate" fix was wrong for this case — the game had been
+  rescheduled/postponed (common in MLB — rainouts, doubleheaders), so the slug still carried its
+  ORIGINAL June 11 date while the market's `endDate` had correctly moved out to the real makeup
+  date (`2026-08-27`, confirmed via the same live Gamma lookup). Trusting the slug unconditionally
+  showed a stale 2.5-month-old date for a game that hadn't happened yet — the mirror-image failure
+  of Task #43's case, where the slug was right and endDate was the buggy one. Added
+  `_resolve_end_date()`: when slug-date and endDate agree (within 3 days — the ordinary
+  evening-game UTC rollover), use the slug as before; when they diverge by more, use how decided
+  the market currently is as the tiebreaker — `cur_price` near 0 or 1 means the outcome is already
+  effectively settled, consistent with the earlier (slug) date being the real, already-played game
+  day (Task #43's case); `cur_price` still near 0.5 means the outcome is genuinely undecided,
+  consistent with the later (endDate) date being the real one (this case). No extra API calls
+  needed — `cur_price` was already being fetched for every position. Verified with a scripted test
+  covering all four now-known shapes: the Task #43 Padres/Diamondbacks case (decided, endDate
+  buggy → slug wins), this Braves/White Sox case (undecided, rescheduled → endDate wins), the
+  Task #42 Knicks/Cavaliers case (normal 1-day evening rollover, dates agree → slug wins as
+  before), and a futures market with no date in its slug (clean fallback to endDate, unaffected).
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---

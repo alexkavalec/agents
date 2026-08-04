@@ -105,6 +105,48 @@ def _req(url: str, params: dict = None) -> object:
     return None
 
 
+def _resolve_end_date(slug: str, end_date_raw: str, cur_price: float) -> str:
+    """Reconcile the market slug's embedded date against the raw endDate field —
+    neither can be trusted alone. Confirmed live, both directions:
+      - A real MLB moneyline market's endDate was a full week after its own
+        slug's date and its sibling markets' endDates on the same game — the
+        slug was right, endDate was just wrong (Task #43).
+      - A rescheduled/postponed MLB game's slug still said its ORIGINAL date
+        while the market — still active, price ~50/50, genuinely undecided —
+        had correctly moved endDate out nearly 2.5 months to the real makeup
+        date. Trusting the slug there shows a stale date for a game that
+        hasn't happened yet (Task #45).
+
+    When the two dates agree (within a few days — the ordinary evening-game
+    UTC rollover) there's nothing to reconcile. When they diverge by more than
+    that, use how decided the market currently is as the tiebreaker: a price
+    near 0 or 1 means the outcome is already effectively settled, consistent
+    with the earlier (slug) date being the real, already-played game day. A
+    price still near 0.5 means the outcome is genuinely undecided, consistent
+    with the later (endDate) date being the real one — the game hasn't
+    happened yet, i.e. it was rescheduled."""
+    slug_match = _SLUG_DATE_RE.search(slug or "")
+    slug_date_str = slug_match.group(1) if slug_match else None
+    end_date_str = (end_date_raw or "")[:10]
+
+    if not slug_date_str:
+        return end_date_str
+    if not end_date_str:
+        return slug_date_str
+
+    try:
+        d1 = datetime.strptime(slug_date_str, "%Y-%m-%d").date()
+        d2 = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return slug_date_str
+
+    if abs((d1 - d2).days) <= 3:
+        return slug_date_str
+
+    decided = cur_price <= 0.05 or cur_price >= 0.95
+    return slug_date_str if decided else end_date_str
+
+
 def _parse_position(pos: dict) -> dict:
     """Extract + validate the fields both get_whale_signals()'s full scan and
     get_live_positions()'s single-trader refresh need from one raw /positions
@@ -116,14 +158,11 @@ def _parse_position(pos: dict) -> dict:
     title     = pos.get("title", asset[:30])
     avg_price = float(pos.get("avgPrice", 0) or 0)
     cur_price = float(pos.get("curPrice", pos.get("currentValue", 0)) or 0)
-
-    # Prefer the date embedded in the market/event slug over the raw endDate
-    # field — see _SLUG_DATE_RE's comment above for why endDate alone can't be
-    # trusted. Falls back to endDate for markets with no date in their slug
-    # (futures/long-running markets, e.g. "will-x-win-2026-finals").
-    slug = pos.get("slug", "") or pos.get("eventSlug", "") or ""
-    slug_match = _SLUG_DATE_RE.search(slug)
-    end_date = slug_match.group(1) if slug_match else (pos.get("endDate", "") or "")[:10]
+    end_date  = _resolve_end_date(
+        pos.get("slug", "") or pos.get("eventSlug", "") or "",
+        pos.get("endDate", "") or "",
+        cur_price,
+    )
 
     if not asset or avg_price <= 0:
         return None
