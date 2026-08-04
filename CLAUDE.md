@@ -725,6 +725,27 @@ confirm-before-apply step stays even for manual trades; the user already had an
   buggy → slug wins), this Braves/White Sox case (undecided, rescheduled → endDate wins), the
   Task #42 Knicks/Cavaliers case (normal 1-day evening rollover, dates agree → slug wins as
   before), and a futures market with no date in its slug (clean fallback to endDate, unaffected).
+- [x] **Task #46** — User asked about a "Rakuten Monkeys vs. TSG Hawks" (CPBL) position showing
+  "Jul 17, 2026" — Task #45's price-extremity tiebreaker got this one wrong. Confirmed live: the
+  real market's slug is `cpbl-rak-tsg-2026-07-10` (game day July 10) but its `endDate` is
+  `2026-07-17T10:35:00Z` — **exactly a week later, the identical offset to Task #43's original MLB
+  bug**, not a genuine reschedule like Task #45's Braves case (which was 77 days out). The price
+  here (27.5¢) just wasn't as lopsided as the Padres case's 99.4¢, so the old "is the price
+  decided" check alone misclassified a second instance of the ~1-week endDate bug as an undecided/
+  rescheduled game and picked the wrong (later, buggy) date. Root cause: price extremity was being
+  used as the ONLY signal, when the real distinguishing feature between "known ~1-week data bug"
+  and "genuine multi-week/month reschedule" is the SIZE of the gap between the two dates, not how
+  lopsided the price is. Rewrote `_resolve_end_date()`'s tiebreak to check gap size first: <= 14
+  days is treated as the known short-offset bug pattern (trust the slug outright, regardless of
+  price); > 14 days is treated as a plausible genuine reschedule, falling back to the price check
+  only at that point (still-decided price → trust the earlier slug anyway; genuinely undecided →
+  trust the later endDate). Explicitly documented as a heuristic tuned to the specific cases seen
+  live, not a guarantee — a genuine reschedule that happens to land within 14 days would still show
+  a stale date, the harder case to distinguish from the bug pattern without an extra per-position
+  API call. Verified with a scripted test covering all five now-known shapes: Task #43 (decided,
+  ~1wk bug → slug), Task #45 (undecided, 77-day genuine reschedule → endDate), this CPBL case
+  (undecided, ~1wk bug → slug, the one the old logic got wrong), Task #42 (normal 1-day evening
+  rollover → slug), and a futures market with no slug date (clean fallback, unaffected).
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---

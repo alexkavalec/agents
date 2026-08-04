@@ -107,24 +107,39 @@ def _req(url: str, params: dict = None) -> object:
 
 def _resolve_end_date(slug: str, end_date_raw: str, cur_price: float) -> str:
     """Reconcile the market slug's embedded date against the raw endDate field —
-    neither can be trusted alone. Confirmed live, both directions:
-      - A real MLB moneyline market's endDate was a full week after its own
-        slug's date and its sibling markets' endDates on the same game — the
-        slug was right, endDate was just wrong (Task #43).
-      - A rescheduled/postponed MLB game's slug still said its ORIGINAL date
-        while the market — still active, price ~50/50, genuinely undecided —
-        had correctly moved endDate out nearly 2.5 months to the real makeup
-        date. Trusting the slug there shows a stale date for a game that
-        hasn't happened yet (Task #45).
+    neither can be trusted alone. Confirmed live, three distinct patterns:
+      - Ordinary evening-game UTC rollover: the two dates land within a day of
+        each other (e.g. an 8PM ET game's endDate rolls to the next UTC date).
+        Not a bug, just a timezone artifact — trust the slug.
+      - A systematic ~1-week-off bug: a real MLB moneyline market's endDate was
+        a full week after its own slug's date AND after its sibling markets'
+        endDates on the very same event (Task #43) — confirmed again on an
+        unrelated CPBL market with the identical ~7-day gap (Task #46). The
+        slug was right both times; endDate was just wrong.
+      - A genuine reschedule/postponement: a market's slug still said its
+        ORIGINAL date while the market — still active, price ~50/50, genuinely
+        undecided — had correctly moved endDate out nearly 2.5 months to the
+        real makeup date (Task #45). Trusting the slug there shows a stale
+        date for a game that hasn't happened yet.
 
-    When the two dates agree (within a few days — the ordinary evening-game
-    UTC rollover) there's nothing to reconcile. When they diverge by more than
-    that, use how decided the market currently is as the tiebreaker: a price
-    near 0 or 1 means the outcome is already effectively settled, consistent
-    with the earlier (slug) date being the real, already-played game day. A
-    price still near 0.5 means the outcome is genuinely undecided, consistent
-    with the later (endDate) date being the real one — the game hasn't
-    happened yet, i.e. it was rescheduled."""
+    The two known-bad patterns are hard to tell apart from price alone — the
+    CPBL case wasn't as lopsided as the MLB one, so a price-only cutoff picks
+    the wrong one. What actually distinguishes them is the SIZE of the gap: a
+    same-league scheduling/data-entry slip lands within ~2 weeks; an actual
+    reschedule (a new date has to fit around a season calendar) tends to land
+    much further out. So gap size decides first, with price as a tiebreaker
+    only once the gap is big enough to plausibly be a real reschedule:
+      - Gap <= 14 days: near-certainly the ~1-week-off bug (or the ordinary
+        rollover) — trust the slug regardless of price.
+      - Gap > 14 days: plausibly a genuine reschedule — but if the price shows
+        the game is already effectively decided, the slug's earlier date is
+        still more likely the real one (a market can stay technically
+        "active" for a while after a lopsided result); only trust the later
+        endDate when the price is still genuinely undecided too.
+    This is a heuristic tuned to the specific cases seen live, not a
+    guarantee — a genuine reschedule inside the 14-day window would still show
+    a stale date, but that's the harder case to distinguish from the bug
+    pattern without an extra API call per position."""
     slug_match = _SLUG_DATE_RE.search(slug or "")
     slug_date_str = slug_match.group(1) if slug_match else None
     end_date_str = (end_date_raw or "")[:10]
@@ -140,7 +155,7 @@ def _resolve_end_date(slug: str, end_date_raw: str, cur_price: float) -> str:
     except ValueError:
         return slug_date_str
 
-    if abs((d1 - d2).days) <= 3:
+    if abs((d1 - d2).days) <= 14:
         return slug_date_str
 
     decided = cur_price <= 0.05 or cur_price >= 0.95
