@@ -3,8 +3,12 @@
 ## Repo & Deploy
 - **Repo:** github.com/alexkavalec/agents (forked from Polymarket/agents)
 - **Host:** Railway, runs 24/7. Start command: `python cli.py run-loop --interval-minutes 15`
-- **Stack:** Python 3.9, py-clob-client-v2, web3.py. **No LLM/AI dependency** — the bot is
-  purely mechanical, driven entirely by Polymarket leaderboard data.
+- **Stack:** Python 3.9, py-clob-client-v2, web3.py. **The trading decision logic has no
+  LLM/AI dependency** — signal generation, sizing, and order placement are purely mechanical,
+  driven entirely by Polymarket leaderboard data (see "Current Architecture" below). The
+  dashboard optionally uses Claude (via `anthropic`) for a narrow, explicitly-scoped exception:
+  parsing the chat box's plain-English messages into a fixed set of parameter overrides — see
+  "Chat-Driven Overrides" below. Claude never picks markets, analyzes odds, or decides trades.
 - **Branch for new work:** `claude/polymarket-trading-bot-*` → PR → squash merge to `main`
 
 ## Key Files (the entire trading pipeline — nothing else remains)
@@ -15,14 +19,20 @@
   (the bot's SOLE trade signal source)
 - `agents/polymarket/polymarket.py` — CLOB client wrapper: auth, balance, positions, orders
 - `agents/memory/trade_log.py` / `agents/memory/scoreboard.py` — trade history + win/loss tracking
-- `agents/application/dashboard.py` + `agents/application/dashboard_static/index.html` — read-only
-  stats web dashboard (balance, open positions, trade history, P&L chart, whale leaderboards —
-  click a trader to see their open positions in a modal), started by `run_loop` in a background
-  thread. Stdlib `http.server` only, no new
-  dependencies. Polls every 60s client-side; balance/positions/trades are live per request, whale
-  leaderboard/position data comes from `whale_scan_cache.json` (written once per 15-min bot cycle,
-  not re-scraped per dashboard request). Optional `DASHBOARD_TOKEN` gates it via `?key=` query
-  param — see Environment/Railway Notes below.
+- `agents/application/dashboard.py` + `agents/application/dashboard_static/index.html` — mostly
+  read-only stats web dashboard (balance, open positions, trade history, P&L chart, whale
+  leaderboards — click a trader to see their open positions in a modal), plus a chat box (see
+  below) that's the one part of the dashboard that can change bot behavior, always behind a
+  user-confirmed proposal. Started by `run_loop` in a background thread. Stdlib `http.server`
+  only, no new HTTP-framework dependency. Polls every 60s client-side; balance/positions/trades
+  are live per request, whale leaderboard/position data comes from `whale_scan_cache.json`
+  (written once per 15-min bot cycle, not re-scraped per dashboard request). Optional
+  `DASHBOARD_TOKEN` gates it via `?key=` query param — see Environment/Railway Notes below.
+- `agents/application/chat.py` — parses a dashboard chat message into a proposed override via one
+  Claude tool-use call (`ANTHROPIC_API_KEY` required); never writes state directly, never picks
+  markets. See "Chat-Driven Overrides" below.
+- `agents/application/overrides.py` — the small `bot_overrides.json` state file chat-confirmed
+  overrides live in; `trade.py` reads it every cycle. All overrides expire at UTC midnight.
 
 Everything else from the original fork (Gamma market scanner, Chroma RAG, OpenAI-based
 superforecaster/trade-constructor/market-selector, news/Twitter/Reddit/Wikipedia/Tavily
@@ -142,6 +152,61 @@ explicit rules** — see Architecture above. All AI infrastructure (`executor.py
 Chroma, news/enrichment connectors) and all scaled/adaptive risk logic (stop-loss, take-profit,
 daily caps, cooldowns, correlation filtering, drift caps) have been deleted outright, not just
 disconnected. Do not resurrect either plan without an explicit new decision from the user.
+
+**This is still the rule** — Task #36's chat box (below) is not an exception to it, and does not
+reopen the door to it. Claude never sees market data, never analyzes odds, never picks a market,
+and never decides whether/what to trade; it does exactly one thing, parsing a chat message into
+up to three named numeric/string fields (`focus_trader_query`, `trade_count_cap`,
+`size_override_usd`) via a single tool-use call with no market context in its prompt at all. The
+whale-consensus signal pipeline, sizing, and order placement are unchanged and still zero-AI.
+Don't extend chat.py's scope (e.g. letting it pick a specific market, or feeding it live odds)
+without treating that as the same kind of explicit new decision this section has always required.
+
+## Chat-Driven Overrides (Task #36)
+
+The dashboard's chat box lets you type plain English to adjust **three** of the bot's existing
+mechanical knobs for the rest of the current UTC day — nothing else. It cannot pick a market,
+change dedup/opposite-outcome behavior (rules 4/5, still always enforced), or place a trade
+directly.
+
+1. **`focus_trader`** — "copy only tony today": for the rest of the day, only that one whale's
+   positions are used as signals, each treated as its own signal with `whale_count=1`. This
+   bypasses `MIN_WHALES_AGREE` and rule 6 (today's-events-only) for this trader specifically —
+   both are exactly what an explicit single-whale copy request is asking to skip. Built in
+   `Trader._focus_trader_signals()` (`trade.py`), which fetches the whale's current positions
+   fresh each cycle via `WhaleTracker.get_positions()` and converts them into signal dicts with
+   `is_today_event` forced `True`.
+2. **`trade_count_cap`** — "only do 10 trades today": once this many trades have **filled** today
+   (UTC; counted by `trade_log.count_filled_today()`), the bot skips the rest of the day's cycles
+   entirely — checked first, before the whale scan even runs, to avoid wasted API calls once the
+   cap is hit.
+3. **`size_override_usd`** — "do 1 trade of $20 today": replaces the normal `BET_FRACTION` (25%
+   of balance) sizing with a flat dollar amount for the rest of the day. Clamped to the current
+   balance if it would exceed it (logged, not silently dropped).
+
+A single message can set more than one at once — e.g. "do 1 trade of $20 today" is parsed as
+`trade_count_cap=1` **and** `size_override_usd=20` together, not a hand-picked trade on a specific
+market (the user never named a market in that phrasing, and having Claude guess one from a plain-
+English hint would be a real money risk for a fuzzy match — this interpretation was a deliberate
+design choice, flagged back to the user rather than assumed silently).
+
+**Flow**: chat message → `chat.handle_message()` calls Claude with a single `propose_override`
+tool and a system prompt that explicitly limits it to these three fields (no market data in
+context) → any `focus_trader_query` is fuzzy-matched server-side (not by Claude) against
+`whale_scan_cache.json`'s cached trader list, by name or address substring — zero or multiple
+matches returns a clarifying question instead of a proposal → the result is shown in the UI as a
+card the user must click **Confirm** on → confirming `POST`s the proposal to
+`/api/overrides/confirm`, which **re-validates it server-side** (address format, positive
+numbers, sane ranges) before writing to `overrides.save_override()` — the client-held proposal is
+never trusted blindly. A **Clear all** button (`/api/overrides/clear`) cancels early without
+waiting for midnight. `bot_overrides.json`'s own stored `date` is checked against today on every
+load, so anything from a prior UTC day is treated as already-expired rather than silently
+carrying over.
+
+**Design decisions confirmed with the user before building this** (2026-08-03): focus-trader mode
+bypasses the 2+ whale consensus rule for that one trader (not "still needs 2+ agreement"); every
+proposal requires an explicit confirm click before taking effect (not immediate execution); the
+user already had an `ANTHROPIC_API_KEY` and would add it to Railway themselves.
 
 ## Known Issues / To-Do
 - [x] **Task #3** — Trade side logic fixed (`_resolve_trade` reads token IDs from selected market)
@@ -341,6 +406,33 @@ disconnected. Do not resurrect either plan without an explicit new decision from
   the identical path (confirming the import fixed the desync risk) and `log_trade()` actually
   writes there; with `DATA_DIR` unset, every path resolves exactly as before (`os.path.join("",
   "x") == "x"`), confirming zero behavior change for anyone who hasn't configured a volume yet.
+- [x] **Task #36** — Added the dashboard chat box — see "Chat-Driven Overrides" above for the full
+  design writeup. In short: three new files (`agents/application/chat.py`, `overrides.py`, plus
+  `bot_overrides.json` state) let a plain-English message like "copy only tony today" or "do 1
+  trade of $20 today" propose a change to today's `focus_trader`/`trade_count_cap`/
+  `size_override_usd`, which the user must explicitly confirm in the UI before `trade.py` picks it
+  up next cycle. This is a deliberate, narrow, explicitly-user-approved exception to the "zero AI"
+  rule (confirmed via `AskUserQuestion` before building: single-whale bypass of consensus, confirm-
+  before-apply, user already had an API key) — Claude parses intent only, with no market data in
+  its prompt, and never picks markets or executes trades. Three design decisions were made
+  unilaterally within that approved scope and are called out here for visibility: (1) "do 1 trade
+  of $20 today" is interpreted as a count-cap + size-override combo applied to the normal signal
+  pipeline, not a hand-picked trade on a market the user never named — asking Claude to guess a
+  specific market from a vague phrase would risk real money on a misread; (2) focus-trader
+  resolution (fuzzy name matching against cached whale traders) happens in Python, not by asking
+  Claude to know wallet addresses, since that data changes every scan cycle; (3) every override
+  round-tripped from the browser on confirm is re-validated server-side (`_validate_proposal()` in
+  `dashboard.py` — address format, positive numbers, sane ranges) rather than trusted as-is, even
+  though the dashboard is single-operator. Verified: `api.anthropic.com` is reachable from this
+  dev sandbox (got a real 401 from a fake key, not a proxy block) confirming connectivity, though
+  no real key was available to test a live response; `chat.py`'s parsing logic was verified against
+  7 mocked Claude tool-use responses covering all three fields individually and combined, unknown/
+  ambiguous trader names, out-of-scope requests, and no-API-key-configured; `trade.py`'s three
+  override behaviors were verified end-to-end with a 4-scenario integration test (cap reached
+  skips the whale scan entirely; focus mode bypasses `MIN_WHALES_AGREE`/rule 6; size override
+  changes `trade_amount`; oversized override clamps to balance); the full chat UI (send message,
+  confirm/cancel a proposal, clear-all, active-overrides banner) was verified end-to-end with a
+  mocked-backend headless-Chromium test.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
@@ -429,6 +521,9 @@ network is **None** (all blocked). To allow Polymarket API access:
 - **Stats dashboard**: enable "Public Networking" on the service to get a URL for it — Railway
   injects `$PORT`, which `dashboard.py` binds to automatically. Set `DASHBOARD_TOKEN` before
   doing this, or your balance/positions/trade history are readable by anyone with the URL.
+- **Chat box**: set `ANTHROPIC_API_KEY` on the service or the dashboard's chat replies that it
+  isn't configured — the bot's own trading loop is unaffected either way, this only gates the
+  chat feature. See "Chat-Driven Overrides" above.
 
 ### Persistent state (Task #35)
 **Railway's container filesystem is ephemeral by default** — every redeploy (including every

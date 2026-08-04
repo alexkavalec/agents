@@ -152,6 +152,51 @@
   .pnl-tab:hover { background: rgba(255,255,255,0.06); color: var(--text); }
   .pnl-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+  .overrides-banner { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+  .override-pill {
+    display: inline-flex; align-items: center; font-size: 11.5px; font-weight: 600;
+    padding: 5px 10px; border-radius: 999px; background: rgba(61,220,132,0.12); color: var(--green);
+    border: 1px solid rgba(61,220,132,0.3);
+  }
+  .override-clear-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    font-size: 11.5px; font-weight: 600; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+  }
+  .override-clear-btn:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+
+  .chat-log {
+    max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+    padding: 2px 2px 14px;
+  }
+  .chat-msg { max-width: 82%; padding: 9px 13px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; }
+  .chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .chat-msg.assistant {
+    align-self: flex-start; background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+  }
+  .chat-proposal {
+    align-self: flex-start; max-width: 82%; background: rgba(124,140,255,0.08);
+    border: 1px solid var(--accent); border-radius: 12px; padding: 12px 14px; font-size: 13px;
+  }
+  .chat-proposal .summary { margin-bottom: 10px; }
+  .chat-proposal .actions { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12.5px; }
+  .chat-proposal .actions button {
+    border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer; border: none;
+  }
+  .chat-proposal .confirm-btn { background: var(--accent); color: #fff; }
+  .chat-proposal .cancel-btn { background: transparent; border: 1px solid var(--border) !important; color: var(--muted); }
+  .chat-form { display: flex; gap: 8px; margin-top: 4px; }
+  .chat-form input {
+    flex: 1; background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 14px; color: var(--text); font-size: 13.5px; outline: none; font-family: inherit;
+  }
+  .chat-form input:focus { border-color: var(--accent); }
+  .chat-form button {
+    background: var(--accent); color: #fff; border: none; border-radius: 10px; padding: 10px 18px;
+    font-weight: 600; font-size: 13.5px; cursor: pointer; flex-shrink: 0;
+  }
+  .chat-form button:disabled { opacity: 0.5; cursor: default; }
+
   @media (max-width: 480px) {
     body { padding: 20px 12px 56px; }
     .card { padding: 12px 14px; }
@@ -169,6 +214,23 @@
   </div>
 
   <div class="cards" id="cards"></div>
+
+  <section>
+    <div class="section-head"><h2>Assistant</h2></div>
+    <div class="panel">
+      <div class="overrides-banner" id="overrides-banner" style="display:none;"></div>
+      <div class="chat-log" id="chat-log">
+        <div class="chat-msg assistant">Hi — I can adjust three things about today's trading: copy one
+          specific trader only, cap the number of trades, or set a flat trade size. Try
+          "copy only tony today" or "cap 10 trades today, $20 each." I won't apply anything
+          until you confirm it.</div>
+      </div>
+      <form class="chat-form" id="chat-form">
+        <input type="text" id="chat-input" placeholder="Ask me to adjust today's trading…" autocomplete="off">
+        <button type="submit">Send</button>
+      </form>
+    </div>
+  </section>
 
   <section>
     <div class="section-head"><h2>Profit Over Time</h2></div>
@@ -629,7 +691,108 @@ function render(data) {
   const whaleUpdated = data.whale_last_updated ? fmtTime(data.whale_last_updated) : "no scan yet";
   document.getElementById("whale-updated").textContent = "leaderboard as of " + whaleUpdated;
   renderLeaderboards(data.whale_leaderboards || {});
+
+  renderOverridesBanner(data.active_overrides || {});
 }
+
+// ---- Chat-driven trading overrides (see agents/application/chat.py + overrides.py) ----
+function renderOverridesBanner(ov) {
+  const banner = document.getElementById("overrides-banner");
+  const pills = [];
+  if (ov.focus_trader) pills.push(`<span class="override-pill">Following: ${escapeHtml(ov.focus_trader.name)}</span>`);
+  if (ov.trade_count_cap !== null && ov.trade_count_cap !== undefined) pills.push(`<span class="override-pill">Cap: ${ov.trade_count_cap}/day</span>`);
+  if (ov.size_override_usd !== null && ov.size_override_usd !== undefined) pills.push(`<span class="override-pill">Size: ${fmtUsd(ov.size_override_usd)}/trade</span>`);
+  if (!pills.length) {
+    banner.style.display = "none";
+    banner.innerHTML = "";
+    return;
+  }
+  banner.style.display = "flex";
+  banner.innerHTML = pills.join("") + `<button type="button" class="override-clear-btn" id="clear-overrides-btn">Clear all</button>`;
+  document.getElementById("clear-overrides-btn").addEventListener("click", () => {
+    fetch("/api/overrides/clear" + (key ? ("?key=" + encodeURIComponent(key)) : ""), { method: "POST" })
+      .then(r => r.json())
+      .then(renderOverridesBanner)
+      .catch(() => {});
+  });
+}
+
+function appendChatMessage(role, text) {
+  const log = document.getElementById("chat-log");
+  const div = document.createElement("div");
+  div.className = "chat-msg " + role;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function appendProposalCard(proposal) {
+  const log = document.getElementById("chat-log");
+  const div = document.createElement("div");
+  div.className = "chat-proposal";
+  div.innerHTML = `
+    <div class="summary">${escapeHtml(proposal.summary || "")}</div>
+    <div class="actions">
+      <button type="button" class="confirm-btn">Confirm</button>
+      <button type="button" class="cancel-btn">Cancel</button>
+    </div>
+  `;
+  div.querySelector(".confirm-btn").addEventListener("click", () => {
+    const url = "/api/overrides/confirm" + (key ? ("?key=" + encodeURIComponent(key)) : "");
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(proposal),
+    })
+      .then(r => r.json())
+      .then(result => {
+        if (result.error) {
+          div.querySelector(".actions").textContent = "Error: " + result.error;
+          return;
+        }
+        div.classList.add("resolved");
+        div.querySelector(".actions").textContent = "✓ Applied.";
+        renderOverridesBanner(result);
+      })
+      .catch(() => { div.querySelector(".actions").textContent = "Error confirming — try again."; });
+  });
+  div.querySelector(".cancel-btn").addEventListener("click", () => {
+    div.classList.add("resolved");
+    div.querySelector(".actions").textContent = "Cancelled.";
+  });
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+document.getElementById("chat-form").addEventListener("submit", e => {
+  e.preventDefault();
+  const input = document.getElementById("chat-input");
+  const message = input.value.trim();
+  if (!message) return;
+  appendChatMessage("user", message);
+  input.value = "";
+  const sendBtn = document.querySelector("#chat-form button[type=submit]");
+  input.disabled = true;
+  sendBtn.disabled = true;
+
+  const url = "/api/chat" + (key ? ("?key=" + encodeURIComponent(key)) : "");
+  fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  })
+    .then(r => r.json())
+    .then(result => {
+      appendChatMessage("assistant", result.reply || "(no reply)");
+      if (result.proposal) appendProposalCard(result.proposal);
+    })
+    .catch(() => appendChatMessage("assistant", "Sorry, something went wrong sending that."))
+    .finally(() => {
+      input.disabled = false;
+      sendBtn.disabled = false;
+      input.focus();
+    });
+});
 
 async function refresh() {
   try {
