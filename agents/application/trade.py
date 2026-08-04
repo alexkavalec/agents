@@ -61,28 +61,123 @@ def _opposite_side(side: str) -> str:
     return ""  # unrecognised side label — can't determine the opposite safely
 
 
+def _load_trade_history() -> list:
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_trade_history(history: list) -> None:
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+    except Exception as e:
+        print(f"WARN: could not save trade history: {e}")
+
+
+def _record_trade_entry(token_id: str, title: str, side: str) -> None:
+    history = _load_trade_history()
+    history.append({"token_id": token_id, "title": title, "side": side})
+    _save_trade_history(history)
+
+
+def check_dedup(polymarket, title: str, side: str, token_id: str) -> str:
+    """Rules 4/5, as a standalone check anything can call before placing a trade
+    outside the normal signal pipeline (see place_manual_trade below) — never bet
+    the same exact thing twice, never bet the opposite side of a market already
+    held. Returns an error string if the trade should be blocked, or "" if clear."""
+    try:
+        open_positions = polymarket.get_open_positions()
+    except Exception:
+        open_positions = []
+    trade_history = _load_trade_history()
+
+    key = (title.strip().lower(), side.strip().lower())
+    opp_key = (title.strip().lower(), _opposite_side(side))
+    traded_pairs = {
+        (h["title"].strip().lower(), h["side"].strip().lower())
+        for h in trade_history if h.get("title") and h.get("side")
+    }
+    traded_token_ids = {h["token_id"] for h in trade_history if h.get("token_id")}
+    open_pairs = {
+        (p.get("title", "").strip().lower(), (p.get("outcome") or "").strip().lower())
+        for p in open_positions if p.get("title")
+    }
+    held_tokens = {p.get("asset") for p in open_positions if p.get("asset")}
+
+    if token_id in held_tokens or token_id in traded_token_ids or key in traded_pairs or key in open_pairs:
+        return "You already hold (or have already bought) this exact side of this market."
+    if opp_key in open_pairs or opp_key in traded_pairs:
+        return "You already hold the opposite side of this market."
+    return ""
+
+
+def place_manual_trade(polymarket, market_title: str, side: str, token_id: str, amount_usd: float) -> dict:
+    """Place an immediate FOK BUY for a chat-confirmed manual trade — the one
+    path in this file that isn't driven by whale consensus. Still goes through
+    the same dedup rules (4/5) and the same $1 order-minimum floor as every
+    other trade, and logs to trade_history.json / the dedup journal exactly
+    like a normal fill so it's protected against being double-bet next cycle
+    or by the normal signal loop. Returns {"success": bool, "message": str}."""
+    if amount_usd < ABSOLUTE_MIN_TRADE:
+        return {"success": False, "message": f"${amount_usd:.2f} is below Polymarket's ${ABSOLUTE_MIN_TRADE:.2f} order minimum."}
+    try:
+        balance = float(polymarket.get_usdc_balance())
+    except Exception as e:
+        return {"success": False, "message": f"Could not read balance: {e}"}
+    if amount_usd > balance:
+        return {"success": False, "message": f"That's ${amount_usd:.2f} but your balance is only ${balance:.2f}."}
+
+    block_reason = check_dedup(polymarket, market_title, side, token_id)
+    if block_reason:
+        return {"success": False, "message": block_reason}
+
+    from py_clob_client_v2 import MarketOrderArgs, OrderType, Side, PartialCreateOrderOptions
+    order_args = MarketOrderArgs(token_id=token_id, amount=amount_usd, side=Side.BUY, order_type=OrderType.FOK)
+    try:
+        resp = polymarket.client.create_and_post_market_order(
+            order_args=order_args,
+            options=PartialCreateOrderOptions(tick_size="0.01"),
+            order_type=OrderType.FOK,
+        )
+        order_id = resp.get("orderID", resp.get("id", "")) if isinstance(resp, dict) else ""
+        success = resp.get("success", True) if isinstance(resp, dict) else True
+        if success:
+            log_trade(market_title, token_id, side, 0.0, 0.0, 0.0, amount_usd, "filled")
+            _record_trade_entry(token_id, market_title, side)
+            _discord(
+                f"✅ **MANUAL TRADE (chat)** — {side} ${amount_usd:.2f}\n"
+                f"> {market_title[:120]}"
+            )
+            return {"success": True, "message": f"Filled — order {str(order_id)[:16] or '(no id)'}."}
+        log_trade(market_title, token_id, side, 0.0, 0.0, 0.0, amount_usd, "error")
+        return {"success": False, "message": f"Order not successful: {resp}"}
+    except Exception as e:
+        err = str(e)
+        if "fully filled" in err or "FOK" in err.upper() or "killed" in err.lower():
+            log_trade(market_title, token_id, side, 0.0, 0.0, 0.0, amount_usd, "fok_killed")
+            return {"success": False, "message": "FOK killed — no liquidity available at that size right now."}
+        if "invalid price" in err.lower():
+            log_trade(market_title, token_id, side, 0.0, 0.0, 0.0, amount_usd, "untradeable")
+            return {"success": False, "message": "Market's no longer tradeable — price has moved outside [0.01, 0.99] (likely near-resolved)."}
+        log_trade(market_title, token_id, side, 0.0, 0.0, 0.0, amount_usd, "error")
+        return {"success": False, "message": f"Order error: {e}"}
+
+
 class Trader:
     def __init__(self):
         self.polymarket = Polymarket()
 
     def _load_trade_history(self) -> list:
-        try:
-            with open(STATE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return []
+        return _load_trade_history()
 
     def _save_trade_history(self, history: list) -> None:
-        try:
-            with open(STATE_FILE, "w") as f:
-                json.dump(history, f, indent=2)
-        except Exception as e:
-            print(f"WARN: could not save trade history: {e}")
+        _save_trade_history(history)
 
     def _record_trade(self, token_id: str, title: str, side: str) -> None:
-        history = self._load_trade_history()
-        history.append({"token_id": token_id, "title": title, "side": side})
-        self._save_trade_history(history)
+        _record_trade_entry(token_id, title, side)
 
     def one_best_trade(self) -> None:
         try:

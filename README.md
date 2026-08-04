@@ -88,19 +88,27 @@ Shows:
 
 ## Chat box
 
-Type plain English into the dashboard's Assistant panel to adjust today's trading — it can only
-do three things, and nothing takes effect until you click **Confirm**:
+The dashboard's Assistant panel is a casual, conversational chat — ask it about your balance,
+positions, or the whale leaderboard, or just talk to it. It has two real levers on the bot, and
+nothing takes effect until you click **Confirm** on the card it shows you:
 
+**Today-only mechanical overrides:**
 - `"copy only tony today"` — for the rest of the day, only that one whale's positions count as
   signals (bypasses the normal 2+ whale consensus requirement for them specifically)
 - `"only do 10 trades today"` — stop trading once 10 trades have filled today
 - `"do 1 trade of $20 today"` — size today's trade(s) at a flat $20 instead of 25% of balance
-  (parsed as a 1-trade cap + $20 size together, not a specific hand-picked market)
 
-Everything resets automatically at UTC midnight, or click **Clear all** to cancel early. Claude
-never sees market data and never picks a market or places a trade — it only maps your message to
-these three fields; every actual trade still goes through the same signal/eligibility pipeline
-above. Requires `ANTHROPIC_API_KEY`.
+Everything resets automatically at UTC midnight, or click **Clear all** to cancel early.
+
+**A specific trade you describe:**
+- `"buy $30 of yes on the lakers game"` — the assistant searches real, currently open Polymarket
+  markets for a confident match; if it's ambiguous, it'll list the candidates and ask which one
+  you meant rather than guess. The confirm card always shows the exact market question, side,
+  price, and amount so you can verify it before it places a real order — this executes
+  immediately on confirm, not on the bot's next 15-minute cycle, and still respects the same
+  never-bet-the-same-thing-twice / never-bet-both-sides rules as everything else.
+
+Requires `ANTHROPIC_API_KEY`.
 
 ## Deployment
 

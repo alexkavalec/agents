@@ -153,60 +153,103 @@ Chroma, news/enrichment connectors) and all scaled/adaptive risk logic (stop-los
 daily caps, cooldowns, correlation filtering, drift caps) have been deleted outright, not just
 disconnected. Do not resurrect either plan without an explicit new decision from the user.
 
-**This is still the rule** — Task #36's chat box (below) is not an exception to it, and does not
-reopen the door to it. Claude never sees market data, never analyzes odds, never picks a market,
-and never decides whether/what to trade; it does exactly one thing, parsing a chat message into
-up to three named numeric/string fields (`focus_trader_query`, `trade_count_cap`,
-`size_override_usd`) via a single tool-use call with no market context in its prompt at all. The
-whale-consensus signal pipeline, sizing, and order placement are unchanged and still zero-AI.
-Don't extend chat.py's scope (e.g. letting it pick a specific market, or feeding it live odds)
-without treating that as the same kind of explicit new decision this section has always required.
+**This is still the rule for the bot's own trading loop** — Task #36/#37's chat box (below) is
+not an exception to it. `trade.py`'s whale-consensus signal pipeline, sizing, and order placement
+are unchanged and still zero-AI; Claude never influences *which* signal the bot itself picks or
+*why*. The one narrow exception, added explicitly by the user's own request (2026-08-04, Task
+#37): the chat box can now place a **specific trade the user describes in words** — Claude never
+picks a market on its own initiative, gives a prediction, or decides a trade should happen; it
+only resolves a request the human explicitly typed into a real Polymarket market via search (see
+market_search.py), and nothing executes without that human clicking Confirm on the exact market/
+side/price/amount shown. That's a materially different thing from "the bot's AI decides what to
+trade," and don't blur the two — extending this further (e.g. having Claude suggest trades
+unprompted, or act on anything other than an explicit user request) would be the kind of change
+this section has always required an explicit new decision for.
 
-## Chat-Driven Overrides (Task #36)
+## Chat-Driven Overrides & Manual Trades (Tasks #36, #37)
 
-The dashboard's chat box lets you type plain English to adjust **three** of the bot's existing
-mechanical knobs for the rest of the current UTC day — nothing else. It cannot pick a market,
-change dedup/opposite-outcome behavior (rules 4/5, still always enforced), or place a trade
-directly.
+The dashboard's chat box is a casual, conversational assistant — it can talk about anything
+(balance, positions, the whale leaderboard, how the bot works, or just chat) using a read-only
+snapshot of the bot's live state passed into its system prompt every turn (see
+`chat._format_context()`). It keeps the last `MAX_HISTORY_MESSAGES` (12) turns of conversation so
+follow-ups like "the second one" work naturally — the frontend holds `chatHistory` in JS and
+sends it with every `/api/chat` call; nothing is persisted server-side between messages. But it
+has exactly **two** real levers on the world, and neither executes without an explicit Confirm
+click in the UI:
+
+### 1. `propose_override` — three mechanical knobs, today only (Task #36)
+Adjusts the bot's existing rules for the rest of the current UTC day. Cannot change dedup/
+opposite-outcome behavior (rules 4/5, still always enforced).
 
 1. **`focus_trader`** — "copy only tony today": for the rest of the day, only that one whale's
    positions are used as signals, each treated as its own signal with `whale_count=1`. This
-   bypasses `MIN_WHALES_AGREE` and rule 6 (today's-events-only) for this trader specifically —
-   both are exactly what an explicit single-whale copy request is asking to skip. Built in
-   `Trader._focus_trader_signals()` (`trade.py`), which fetches the whale's current positions
-   fresh each cycle via `WhaleTracker.get_positions()` and converts them into signal dicts with
-   `is_today_event` forced `True`.
+   bypasses `MIN_WHALES_AGREE` and rule 6 (today's-events-only) for this trader specifically.
+   Built in `Trader._focus_trader_signals()` (`trade.py`), which fetches the whale's current
+   positions fresh each cycle via `WhaleTracker.get_positions()` and converts them into signal
+   dicts with `is_today_event` forced `True`.
 2. **`trade_count_cap`** — "only do 10 trades today": once this many trades have **filled** today
    (UTC; counted by `trade_log.count_filled_today()`), the bot skips the rest of the day's cycles
-   entirely — checked first, before the whale scan even runs, to avoid wasted API calls once the
-   cap is hit.
+   entirely — checked first, before the whale scan even runs.
 3. **`size_override_usd`** — "do 1 trade of $20 today": replaces the normal `BET_FRACTION` (25%
    of balance) sizing with a flat dollar amount for the rest of the day. Clamped to the current
    balance if it would exceed it (logged, not silently dropped).
 
 A single message can set more than one at once — e.g. "do 1 trade of $20 today" is parsed as
-`trade_count_cap=1` **and** `size_override_usd=20` together, not a hand-picked trade on a specific
-market (the user never named a market in that phrasing, and having Claude guess one from a plain-
-English hint would be a real money risk for a fuzzy match — this interpretation was a deliberate
-design choice, flagged back to the user rather than assumed silently).
+`trade_count_cap=1` **and** `size_override_usd=20` together (still applied to the bot's normal
+whale-consensus signal pipeline), distinct from tool 2 below which is for a trade the user
+actually names a specific market for.
 
-**Flow**: chat message → `chat.handle_message()` calls Claude with a single `propose_override`
-tool and a system prompt that explicitly limits it to these three fields (no market data in
-context) → any `focus_trader_query` is fuzzy-matched server-side (not by Claude) against
+Any `focus_trader_query` is fuzzy-matched server-side (not by Claude) against
 `whale_scan_cache.json`'s cached trader list, by name or address substring — zero or multiple
-matches returns a clarifying question instead of a proposal → the result is shown in the UI as a
-card the user must click **Confirm** on → confirming `POST`s the proposal to
-`/api/overrides/confirm`, which **re-validates it server-side** (address format, positive
-numbers, sane ranges) before writing to `overrides.save_override()` — the client-held proposal is
-never trusted blindly. A **Clear all** button (`/api/overrides/clear`) cancels early without
-waiting for midnight. `bot_overrides.json`'s own stored `date` is checked against today on every
-load, so anything from a prior UTC day is treated as already-expired rather than silently
-carrying over.
+matches returns a clarifying question instead of a proposal. Confirming `POST`s to
+`/api/overrides/confirm`, which **re-validates server-side** (address format, positive numbers,
+sane ranges) before writing to `overrides.save_override()`. A **Clear all** button
+(`/api/overrides/clear`) cancels early. `bot_overrides.json`'s own stored `date` is checked
+against today on every load, so anything from a prior UTC day is already-expired.
 
-**Design decisions confirmed with the user before building this** (2026-08-03): focus-trader mode
-bypasses the 2+ whale consensus rule for that one trader (not "still needs 2+ agreement"); every
-proposal requires an explicit confirm click before taking effect (not immediate execution); the
-user already had an `ANTHROPIC_API_KEY` and would add it to Railway themselves.
+### 2. `propose_manual_trade` — a specific trade the user describes (Task #37)
+"Buy $30 of yes on the lakers game" — added per an explicit user request to not limit the
+assistant to the three fixed knobs. This is real order execution from natural language, so the
+match-then-confirm flow is deliberately conservative:
+
+1. Claude extracts `market_query` (search text), `side` (outcome in the user's own words), and
+   `amount_usd` — it does **not** know real market titles/IDs/prices; it's explicitly told not to
+   guess between ambiguous candidates itself.
+2. `agents/connectors/market_search.py`'s `search_markets()` queries Gamma's public-search
+   endpoint (`gamma-api.polymarket.com/public-search` — the same one polymarket.com's own search
+   bar calls, found by testing it directly; no API key needed), filtered to markets that are
+   `active`, not `closed`, and `acceptingOrders`.
+3. **`is_relevant()` is a hard safety gate, not a nicety** — found via live testing that Gamma's
+   search is semantic, not exact: querying "bitcoin above 100k" ranked a "Bitcoin above $54,000"
+   market first (same topic, wrong number — a real, dangerous failure mode for money-moving code).
+   If the query names a specific number, the candidate's question must mention a matching number
+   too (normalizes "100k" vs "$100,000"); otherwise a word-overlap check applies, strict for
+   short/named-entity queries (e.g. "xi jinping" must match in full, not partial-credit down to
+   generic words like "leader" that every candidate shares).
+4. Zero relevant matches → tell the user, don't guess. More than one → list up to 5 candidates by
+   full question text and ask which one, rather than trusting Gamma's top-ranked result — this is
+   why conversation history matters, so "the second one" resolves against that list next turn.
+   Exactly one → look up the requested side against that market's real `outcomes` array (not
+   assumed to be Yes/No — many markets have named outcomes) and get its real `token_id`/price.
+5. The resulting proposal shows the **exact, verbatim** market question, side, amount, and price
+   in the confirm card — deliberately not just Claude's paraphrase — so a human visually verifies
+   the real match before clicking. This is the actual last line of defense against a bad match,
+   not the relevance filter above (defense in depth, not either/or).
+6. Confirming `POST`s to `/api/manual-trade/confirm` (re-validated server-side, same principle as
+   `/api/overrides/confirm`), which calls `trade.place_manual_trade()` — an **immediate** FOK BUY
+   (not queued for the next 15-minute cycle, since "buy $30 now" means now), still gated by the
+   same $1 order minimum and the same rules 4/5 dedup check (`trade.check_dedup()`, extracted from
+   `one_best_trade()`'s eligibility loop so both paths share one implementation) so a manual trade
+   can't accidentally double up on or contradict an existing position. Logs to
+   `trade_history.json` and the dedup journal exactly like a normal signal-driven fill.
+
+**Design decisions confirmed with the user before building this** (2026-08-03/04): focus-trader
+mode bypasses the 2+ whale consensus rule for that one trader; every proposal (both tools)
+requires an explicit confirm click before taking effect; the user explicitly asked for real trade
+execution from natural language rather than keeping chat limited to the three original knobs
+(confirmed via `AskUserQuestion` after the user said "I don't want to limit its potential"); the
+confirm-before-apply step stays even for manual trades; the user already had an
+`ANTHROPIC_API_KEY`.
 
 ## Known Issues / To-Do
 - [x] **Task #3** — Trade side logic fixed (`_resolve_trade` reads token IDs from selected market)
@@ -433,6 +476,42 @@ user already had an `ANTHROPIC_API_KEY` and would add it to Railway themselves.
   changes `trade_amount`; oversized override clamps to balance); the full chat UI (send message,
   confirm/cancel a proposal, clear-all, active-overrides banner) was verified end-to-end with a
   mocked-backend headless-Chromium test.
+- [x] **Task #37** — Chat box overhaul: casual tone + live-state awareness + real manual trade
+  execution — see "Chat-Driven Overrides & Manual Trades" above for the full writeup. Prompted by
+  explicit user feedback that Task #36's assistant felt too limited/robotic ("I want it to do
+  whatever I ask it like a real assistant... make it more casual and friendly"), confirmed via
+  `AskUserQuestion` before building that this should include real trade execution (not just the
+  three existing knobs) while keeping the confirm-before-apply step. Three things changed: (1)
+  system prompt rewritten for a casual, personable tone, and given a read-only snapshot of live
+  bot state (balance, positions, scoreboard, active overrides, leaderboard top 5) each turn via
+  `chat._format_context()` so it can actually answer questions instead of only parsing commands;
+  (2) added lightweight conversation history (last 12 turns, held client-side in `chatHistory` JS
+  array, sent with every `/api/chat` call) so follow-up disambiguation works; (3) added
+  `propose_manual_trade`, a second tool letting the assistant place a trade the user describes in
+  words, resolved against real open Polymarket markets via a new `agents/connectors/
+  market_search.py` (Gamma's public-search endpoint) and executed immediately on confirm via a new
+  `trade.place_manual_trade()`. The real engineering weight here was safety, not the happy path:
+  discovered live that Gamma's search is semantic rather than exact (a "$100k bitcoin" query
+  ranked a "$54,000" market first — same topic, wrong number), which would be a serious
+  misexecution risk for money-moving code; added `market_search.is_relevant()` as a hard filter
+  (number-aware — normalizes "100k" vs "$100,000" — plus a strict word-overlap check for short/
+  named-entity queries) that declines to guess rather than trust Gamma's ranking, on top of always
+  showing the verbatim market question/side/price in the confirm card as the real human-verified
+  last line of defense. Manual trades still run through `trade.check_dedup()` (rules 4/5,
+  extracted from `one_best_trade()`'s eligibility loop into a standalone function so both paths
+  share one implementation, not two copies that could drift) and the same $1 order minimum.
+  Verified: `market_search.is_relevant()` against 5 real live Gamma queries (confirmed it correctly
+  zeroes out the "$100k bitcoin" and bare "lakers" cases while cleanly narrowing "xi jinping" and
+  "trump 2028" to their true 1-2 relevant candidates); `chat._resolve_manual_trade()` against 5
+  mocked scenarios (confident single match, ambiguous multi-match, no match, unrecognized side,
+  invalid amount); `trade.place_manual_trade()` against 7 scenarios (below-minimum, exceeds
+  balance, same-side dedup block, opposite-side dedup block, successful fill + dedup-journal
+  write, re-attempt correctly blocked by that same journal entry, FOK-killed); a regression test
+  confirming Task #36's three override behaviors still work unchanged after refactoring `Trader`'s
+  trade-history methods into shared module-level functions; and a full mocked-backend headless-
+  Chromium test confirming the manual-trade confirm card shows the exact market/side/amount/price,
+  confirming actually calls through to order placement, and conversation history is correctly
+  threaded into each `/api/chat` request body.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
@@ -491,6 +570,27 @@ why Task #33 initially shipped without `1Y`/`YTD`. The direct endpoint accepts a
 - Other profile-page query keys present but unused (no realized-P&L-per-market breakdown in any):
   `/api/profile/marketsTraded`, `/api/profile/userData`, `/api/profile/volume`,
   `"positions","value"`, `"profile-biggest-wins"`, `"profile","positions",...,"CURRENT","DESC"`.
+
+### `gamma-api.polymarket.com/public-search` — market search for chat's manual trades (Task #37)
+The real endpoint behind polymarket.com's own search bar — confirmed live by curling it directly,
+no reverse-engineering needed this time. `GET /public-search?q={text}&limit_per_type=15&
+events_status=active` returns `{"events": [...]}`, each event nesting one or more `markets`
+(events like "NBA Playoffs: Lakers vs Rockets" bundle a single market; others like "who wins the
+NBA championship" bundle many team-specific ones). No API key required.
+- Each market object has `active`/`closed`/`acceptingOrders` booleans — **must** filter on all
+  three; the search results otherwise include long-resolved and not-yet-open markets mixed in.
+- `outcomes`, `outcomePrices`, `clobTokenIds` are JSON-encoded **strings**, not native arrays —
+  `json.loads()` each one; they're positionally paired (`outcomes[i]` ↔ `clobTokenIds[i]`).
+- **Confirmed via live testing that ranking is semantic, not exact** — this is the important
+  finding, not the endpoint shape. Querying `"bitcoin above 100k"` ranks a `"Bitcoin above
+  $54,000"` market first (same topic, wrong threshold); querying `"warriors"` returns dozens of
+  matches spanning NBA, rugby league, and esports team names before any one clearly-intended
+  match. Never trust the top result for something that executes real money — see
+  `market_search.is_relevant()` and the "Chat-Driven Overrides & Manual Trades" section above for
+  how this is handled (a hard number/word-overlap relevance gate, plus always showing the human
+  the verbatim matched question before they confirm).
+- The plain `/markets?search=...` endpoint (used elsewhere in Gamma's API) does **not** actually
+  filter by the `search` param — it's silently ignored. `/public-search` is the real search path.
 
 ### Inspect script
 `scripts/inspect_whale.py` — one-shot profiler for any Polymarket address:
