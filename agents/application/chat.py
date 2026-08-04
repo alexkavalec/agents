@@ -200,7 +200,12 @@ def _resolve_manual_trade(call: dict):
 def _format_context(context: dict) -> str:
     """Turn a snapshot of the bot's live state into plain text for the system
     prompt — read-only reference material, not something Claude can act on
-    except via the two tools above."""
+    except via the two tools above. Deliberately generous: this is everything
+    the dashboard itself knows (full leaderboards, every scanned whale's
+    positions, live consensus signals, actual open positions, recent trades),
+    not a hand-picked subset — an earlier version only exposed the top 5 of 2
+    of the 4 leaderboard windows and nothing about individual whale positions,
+    which meant plenty of real leaderboard questions had no way to be answered."""
     if not context:
         return ""
     lines = ["Current bot state (read-only reference — you can't change any of this except via the two tools above):"]
@@ -208,7 +213,16 @@ def _format_context(context: dict) -> str:
     balance = context.get("balance")
     if balance is not None:
         lines.append(f"- Balance: ${balance:,.2f}")
-    lines.append(f"- Open positions: {context.get('open_positions_count', 0)}")
+
+    positions = context.get("open_positions") or []
+    lines.append(f"- Open positions: {len(positions)}")
+    for p in positions:
+        lines.append(
+            f"  · \"{p.get('title', '?')}\" — {p.get('outcome', '?')}, "
+            f"entry {p.get('avg_price')} -> now {p.get('cur_price')}, "
+            f"traded ${p.get('amount_traded', 0):,.2f}, value ${p.get('current_value', 0):,.2f}, "
+            f"to win ${p.get('to_win', 0):,.2f}"
+        )
 
     sb = context.get("scoreboard") or {}
     if sb:
@@ -227,12 +241,56 @@ def _format_context(context: dict) -> str:
         active.append(f"sized at ${ov['size_override_usd']}/trade")
     lines.append("- Active overrides: " + (", ".join(active) if active else "none"))
 
+    updated = context.get("whale_last_updated")
     lb = context.get("whale_leaderboards") or {}
-    for window, label in (("today", "Today"), ("weekly", "Weekly")):
-        entries = (lb.get(window) or [])[:5]
+    lines.append(f"- Whale leaderboard data as of: {updated or 'unknown'} (refreshes once per 15-min bot cycle)")
+    for window, label in (("today", "Today (unrealized PnL)"), ("weekly", "Weekly (7d profit)"),
+                          ("monthly", "Monthly (30d profit)"), ("all_time", "All-Time profit")):
+        entries = lb.get(window) or []
         if entries:
-            names = ", ".join(f"{e.get('name', '?')} (${e.get('profit', 0):,.0f})" for e in entries)
-            lines.append(f"- {label} leaderboard top {len(entries)}: {names}")
+            names = ", ".join(f"#{i+1} {e.get('name', '?')} ({e.get('address', '')}) ${e.get('profit', 0):,.0f}"
+                               for i, e in enumerate(entries))
+            lines.append(f"- {label} leaderboard (top {len(entries)}): {names}")
+
+    signals = context.get("whale_signals") or []
+    if signals:
+        lines.append(f"- Current consensus signals ({len(signals)} total, this cycle's candidates the bot itself considers):")
+        for s in signals[:20]:
+            fresh = " [NEW]" if s.get("is_fresh") else ""
+            today_tag = " [resolves today]" if s.get("is_today_event") else ""
+            lines.append(
+                f"  · {s.get('whale_count')}x whales — \"{s.get('title', '?')}\" — {s.get('side', '?')}, "
+                f"entry {s.get('avg_entry')} -> now {s.get('cur_price')}, ends {s.get('end_date', '?')}"
+                f"{today_tag}{fresh}"
+            )
+
+    traders = context.get("whale_traders") or []
+    if traders:
+        lines.append(f"- Every tracked whale this scan ({len(traders)} unique traders) and their positions:")
+        for t in traders:
+            wp = t.get("window_profit") or {}
+            wp_str = ", ".join(f"{w}: ${v:,.0f}" for w, v in wp.items()) or "no window profit data"
+            pos = sorted(t.get("positions") or [], key=lambda p: p.get("value", 0), reverse=True)
+            lines.append(f"  · {t.get('name', '?')} ({t.get('address', '')}) — {wp_str} — {len(pos)} open position(s)")
+            for p in pos[:10]:
+                lines.append(
+                    f"      - \"{p.get('title', '?')}\" — {p.get('side', '?')}, "
+                    f"entry {p.get('avg_price')} -> now {p.get('cur_price')}, "
+                    f"traded ${p.get('amount_traded', 0):,.2f}, value ${p.get('value', 0):,.2f}, "
+                    f"to win ${p.get('to_win', 0):,.2f}"
+                )
+            if len(pos) > 10:
+                lines.append(f"      - ...+{len(pos) - 10} more, smaller positions not shown")
+
+    trades = context.get("recent_trades") or []
+    if trades:
+        lines.append(f"- Recent trade attempts (most recent first, up to 15):")
+        for t in trades:
+            lines.append(
+                f"  · {t.get('timestamp', '?')} — \"{t.get('question', '?')}\" — {t.get('side', '?')}, "
+                f"${t.get('amount_usd', 0):,.2f}, status: {t.get('status', '?')}, outcome: {t.get('outcome', '?')}"
+                + (f", P&L: ${t['pnl_usd']:,.2f}" if t.get("pnl_usd") is not None else "")
+            )
 
     return "\n".join(lines)
 
