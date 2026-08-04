@@ -216,22 +216,22 @@ class _Handler(BaseHTTPRequestHandler):
             message = str(data.get("message", ""))[:2000]
             history = data.get("history") if isinstance(data.get("history"), list) else []
             try:
+                # Reuse _build_stats() so the assistant sees exactly what the dashboard
+                # itself shows — full leaderboards, every scanned whale's positions,
+                # actual open positions (not just a count), and recent trades — instead
+                # of the earlier hand-picked, much smaller subset.
+                stats = _build_stats()
                 whale_cache = _load_whale_cache()
-                polymarket = Polymarket()
-                try:
-                    balance = float(polymarket.get_usdc_balance())
-                except Exception:
-                    balance = None
-                try:
-                    positions = polymarket.get_open_positions()
-                except Exception:
-                    positions = []
                 context = {
-                    "balance": balance,
-                    "open_positions_count": len(positions),
-                    "scoreboard": get_scoreboard_stats(),
-                    "active_overrides": overrides.load_overrides(),
-                    "whale_leaderboards": whale_cache.get("leaderboards", {}),
+                    "balance": stats["balance"],
+                    "open_positions": stats["open_positions"],
+                    "scoreboard": stats["scoreboard"],
+                    "active_overrides": stats["active_overrides"],
+                    "whale_last_updated": stats["whale_last_updated"],
+                    "whale_leaderboards": stats["whale_leaderboards"],
+                    "whale_traders": stats["whale_traders"],
+                    "whale_signals": whale_cache.get("signals", []),
+                    "recent_trades": stats["recent_trades"][:15],
                 }
                 result = chat.handle_message(message, whale_cache.get("traders", []), context, history)
                 self._send(200, "application/json", json.dumps(result).encode())

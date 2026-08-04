@@ -512,6 +512,24 @@ confirm-before-apply step stays even for manual trades; the user already had an
   Chromium test confirming the manual-trade confirm card shows the exact market/side/amount/price,
   confirming actually calls through to order placement, and conversation history is correctly
   threaded into each `/api/chat` request body.
+- [x] **Task #38** — Chat context expansion: the assistant couldn't answer a real leaderboard
+  question the user asked it — root cause was `chat._format_context()` only ever exposed the top
+  5 of 2 of the 4 leaderboard windows (today/weekly, never monthly/all-time) and nothing about
+  individual whale positions, current consensus signals, or the bot's own actual open positions
+  (just a count). Rewrote `_format_context()` to include: all 4 leaderboard windows in full (up
+  to 10 entries each, with rank/address); every currently-tracked whale's per-window profit and
+  up to 10 of their largest open positions (entry/current price, $ traded, value, to-win), not
+  just the caller's fuzzy-match list; the bot's own current consensus signals (what `trade.py`
+  itself is evaluating this cycle); the bot's actual open positions in full detail instead of a
+  bare count; and the last 15 trade attempts with status/outcome/P&L. `dashboard.py`'s `/api/chat`
+  handler now builds this from `_build_stats()` (already computed for `/api/stats`) instead of a
+  separate, smaller hand-fetched subset, so the assistant's view of the bot's state matches what
+  the dashboard itself displays. Per-trader positions are capped at the 10 largest by value (some
+  tracked whales hold 100+ dust positions — see swisstony in Task #32 — so this avoids blowing up
+  the prompt on traders with huge position counts while still surfacing what actually matters);
+  everything else is uncapped. Verified with a scripted `_format_context()` call against
+  representative mocked data (multi-window leaderboards, a whale with positions, a signal, a
+  recent trade, an open position) confirming every section renders correctly.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
