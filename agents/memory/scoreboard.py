@@ -84,7 +84,13 @@ def resolve_completed(polymarket_client) -> int:
             continue
 
         redeemable = pos.get("redeemable", False)
-        cur_price  = float(pos.get("curPrice", pos.get("currentValue", -1)) or -1)
+        # A resolved LOSS commonly has curPrice == 0, a legitimate value — `x or -1`
+        # would treat that 0 as falsy and wrongly substitute -1, corrupting the
+        # recorded exit_price even though it happens not to flip win/loss below.
+        raw_cur = pos.get("curPrice")
+        if raw_cur is None:
+            raw_cur = pos.get("currentValue")
+        cur_price = float(raw_cur) if raw_cur is not None else -1.0
 
         # Only resolve when Polymarket has marked the position as redeemable (actual resolution).
         # Price-only checks cause false wins/losses on volatile open markets.
