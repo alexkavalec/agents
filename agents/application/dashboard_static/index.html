@@ -365,19 +365,19 @@ function fmtDateShort(iso) {
     return new Date(iso + (iso.endsWith("Z") ? "" : "Z")).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   } catch (e) { return iso; }
 }
-// Market end_date is a bare "YYYY-MM-DD" (no time-of-day) — Polymarket's own
-// /positions API truncates it that way, from a full timestamp that's already in
-// UTC. For an evening US game (the vast majority of these), that UTC timestamp
-// commonly falls on the calendar day AFTER the actual local game day (e.g. "8PM ET"
-// is past midnight UTC) — so DON'T force UTC when displaying it, or it shows the
-// wrong day. Parsing it as UTC midnight and letting the browser render it in the
-// viewer's own local timezone (same as every other date on this dashboard) recovers
-// the correct local calendar day.
+// Market end_date is a plain "YYYY-MM-DD" calendar date, already resolved
+// server-side to the actual scheduled game/event day (whale_tracker.py's
+// _parse_position() prefers the date embedded in the market's slug over
+// Polymarket's own endDate field, which can be flat-out wrong — confirmed live,
+// a real MLB market's endDate was a full week after its own slug's date). It's
+// NOT a UTC instant, so build it as a LOCAL calendar date (no Date.UTC/"Z") —
+// that's what makes it render as this exact date for every viewer regardless
+// of their timezone, instead of potentially shifting a day either direction.
 function fmtEventDate(dateStr) {
   if (!dateStr) return "—";
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
   if (!m) return dateStr;
-  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
   const today = new Date();
   const isToday = d.getFullYear() === today.getFullYear()
     && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();

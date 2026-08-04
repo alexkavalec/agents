@@ -18,6 +18,7 @@ All endpoints are public — no API key required.
 """
 
 import os
+import re
 import json
 import requests
 from collections import defaultdict
@@ -43,6 +44,14 @@ MIN_POSITION_VALUE = 50.0
 
 # Consensus threshold — require this many independent whales on the same side
 MIN_WHALES_AGREE = 2
+
+# Matches the "YYYY-MM-DD" a market/event slug embeds (e.g. "mlb-sd-ari-2026-08-03"),
+# assigned once at market creation and tied to the actual scheduled game day —
+# used in preference to the position's own "endDate" field, which can be a
+# genuinely different (and wrong) later date. Confirmed live: a real MLB
+# moneyline market's endDate was a full week after its own slug's date AND
+# after its sibling prop markets' endDates on the very same game.
+_SLUG_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
 def _now_iso() -> str:
@@ -107,7 +116,14 @@ def _parse_position(pos: dict) -> dict:
     title     = pos.get("title", asset[:30])
     avg_price = float(pos.get("avgPrice", 0) or 0)
     cur_price = float(pos.get("curPrice", pos.get("currentValue", 0)) or 0)
-    end_date  = pos.get("endDate", "") or ""
+
+    # Prefer the date embedded in the market/event slug over the raw endDate
+    # field — see _SLUG_DATE_RE's comment above for why endDate alone can't be
+    # trusted. Falls back to endDate for markets with no date in their slug
+    # (futures/long-running markets, e.g. "will-x-win-2026-finals").
+    slug = pos.get("slug", "") or pos.get("eventSlug", "") or ""
+    slug_match = _SLUG_DATE_RE.search(slug)
+    end_date = slug_match.group(1) if slug_match else (pos.get("endDate", "") or "")[:10]
 
     if not asset or avg_price <= 0:
         return None
@@ -121,7 +137,7 @@ def _parse_position(pos: dict) -> dict:
     return {
         "asset": asset, "title": title, "side": side,
         "avg_price": avg_price, "cur_price": cur_price,
-        "end_date": end_date[:10], "size": size, "cur_val": cur_val,
+        "end_date": end_date, "size": size, "cur_val": cur_val,
         "amount_traded": amount_traded,
     }
 
