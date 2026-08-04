@@ -603,6 +603,31 @@ confirm-before-apply step stays even for manual trades; the user already had an
   mocked-backend headless-Chromium test confirming the "Opened" column is gone, calling the
   refresh function updates the Now/Value cells in place with new values from a second mocked
   response, and the poll timer is cleared when the modal closes.
+- [x] **Task #42** — Fixed the "Event Date" column (Task #40) showing a market's real game day
+  off by one — user reported a Padres vs. Diamondbacks position that was clearly live/in-progress
+  showing "Aug 11" as its event date. Root cause confirmed by curling Polymarket's own APIs
+  directly: `/positions`' `endDate` field is a bare `"YYYY-MM-DD"` truncated from a full UTC
+  timestamp, and for an evening US game that timestamp is already past midnight UTC — e.g. a
+  real "Knicks vs. Cavaliers" position's description said "scheduled for May 25 at 8:00PM ET," but
+  its true end timestamp (confirmed via both Gamma's `/events/{id}` and the CLOB API's
+  `/markets/{condition_id}`, which has a `game_start_time` field) was `2026-05-26T00:00:00Z` — 8PM
+  ET *is* midnight UTC, so `/positions` truncates it to the day-after date. The bug was entirely
+  in `index.html`'s `fmtEventDate()`: it forced `timeZone: "UTC"` when formatting, which displays
+  exactly the wrong day for this. Removed the forced UTC (both for the displayed label and the
+  "(today)" comparison) so it renders in the viewer's own local timezone instead, same as every
+  other date on the dashboard (`fmtDateShort`/`fmtTime` never forced a timezone either) — no
+  backend change needed, since reconstructing the bare date as UTC midnight and letting the
+  browser convert to local time recovers the correct local calendar day for any US timezone
+  (confirmed both algebraically against the two real markets pulled above, where the UTC
+  rounding-to-day-start still lands within the same local evening, and empirically with a
+  Playwright test asserting an America/New_York-timezone browser renders `"2026-05-26"` as "May
+  25, 2026" while a UTC-timezone browser correctly still renders it as "May 26, 2026" — both
+  correct for their own zone). **Not yet addressed**: the bot's own rule 6 ("today's events
+  only") does this same bare-UTC-date comparison server-side in `trade.py`/`whale_tracker.py`
+  (`is_today_event = end_date == now[:10]`, both UTC), so it likely has the identical off-by-one
+  exposure for evening US games — flagged to the user, not changed here, since it's trading-rule
+  behavior and this project's established pattern (see "Future: Multi-Agent Architecture" section
+  above) is to never touch trade-timing logic without an explicit decision.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---

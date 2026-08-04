@@ -365,19 +365,24 @@ function fmtDateShort(iso) {
     return new Date(iso + (iso.endsWith("Z") ? "" : "Z")).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   } catch (e) { return iso; }
 }
-// Market end_date is a bare "YYYY-MM-DD" calendar date (no time-of-day), unlike the
-// full ISO timestamps fmtDateShort/fmtTime expect — appending "Z" to a date-only
-// string produces an invalid Date, so this parses the fields directly and formats
-// in UTC to avoid the displayed date shifting a day off depending on the viewer's
-// local timezone.
+// Market end_date is a bare "YYYY-MM-DD" (no time-of-day) — Polymarket's own
+// /positions API truncates it that way, from a full timestamp that's already in
+// UTC. For an evening US game (the vast majority of these), that UTC timestamp
+// commonly falls on the calendar day AFTER the actual local game day (e.g. "8PM ET"
+// is past midnight UTC) — so DON'T force UTC when displaying it, or it shows the
+// wrong day. Parsing it as UTC midnight and letting the browser render it in the
+// viewer's own local timezone (same as every other date on this dashboard) recovers
+// the correct local calendar day.
 function fmtEventDate(dateStr) {
   if (!dateStr) return "—";
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
   if (!m) return dateStr;
   const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-  const todayUtc = new Date().toISOString().slice(0, 10);
-  const label = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
-  return dateStr.slice(0, 10) === todayUtc ? label + " (today)" : label;
+  const today = new Date();
+  const isToday = d.getFullYear() === today.getFullYear()
+    && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  const label = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return isToday ? label + " (today)" : label;
 }
 function displayName(row) {
   const addr = row && row.address;
