@@ -530,6 +530,30 @@ confirm-before-apply step stays even for manual trades; the user already had an
   everything else is uncapped. Verified with a scripted `_format_context()` call against
   representative mocked data (multi-window leaderboards, a whale with positions, a signal, a
   recent trade, an open position) confirming every section renders correctly.
+- [x] **Task #39** — Added an "Opened" date to each whale's positions in the trader detail modal,
+  per user feedback that it was hard to tell when a leaderboard trader actually made a given
+  trade. Polymarket's `/positions` API has no "position opened at" timestamp (it only has
+  `endDate`, the market's resolution date) — the closest real signal is `first_seen`, already
+  computed for the `[NEW]`/freshness tag, but it used to only be tracked for positions that
+  reached 2+ whale consensus (`whale_tracker.py`'s per-bucket freshness loop only populated
+  `new_state_pos` for signal-eligible buckets). Moved that tracking into the per-position loop
+  itself, before consensus is even evaluated, so **every** whale position gets a `first_seen`
+  once it first clears the $50 dust filter — including ones that never become a consensus signal
+  — and persists across cycles in `whale_positions_state.json` exactly as before (unchanged
+  behavior for the existing signal-freshness logic, which now just reads the already-populated
+  state instead of writing it a second time). `get_whale_signals()`'s per-trader `positions` list
+  now carries `first_seen` on every entry; `index.html`'s trader modal gained an "Opened" column
+  (`fmtDateShort()` for the cell, `fmtTime()` in the `title` attribute for the exact timestamp on
+  hover) — same as every other date already displayed elsewhere on the dashboard. Still
+  bot-observation-relative, not the whale's actual trade time (Polymarket doesn't expose that
+  without pulling full trade history per wallet) — same caveat as the pre-existing `[NEW]` tag,
+  just now visible for every position, not only fresh/consensus ones. Verified with a scripted
+  `get_whale_signals()` test (two whales, one consensus position + one solo non-consensus
+  position) confirming `first_seen` is set on all three position records including the
+  non-consensus one, persists unchanged on a second scan of the same positions, and that the
+  existing consensus-signal freshness/`is_fresh` behavior is unaffected; confirmed in a
+  mocked-backend headless-Chromium test that the modal renders the new column with the right
+  short date and full-timestamp tooltip.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---

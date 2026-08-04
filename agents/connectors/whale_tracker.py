@@ -330,6 +330,18 @@ class WhaleTracker:
         })
         trader_records: list = []  # per-trader position lists, for the dashboard
 
+        # Loaded up front (not just for the consensus-signal freshness check below)
+        # so every individual whale position — not only ones that reach 2+ whale
+        # consensus — can carry a "first_seen" date the dashboard shows as when we
+        # first noticed that whale in that position. Bot-observation-relative (if
+        # the bot was offline, first_seen reflects whenever it next scanned), but
+        # it's the only "when did they open this" signal Polymarket's API gives us
+        # short of pulling each whale's full trade history.
+        now = _now_iso()
+        prev_state    = _load_whale_state()
+        prev_pos      = prev_state.get("whale_positions", {})
+        new_state_pos: dict = {}  # will replace prev_pos in the saved file
+
         for trader in traders:
             try:
                 positions = self.get_positions(trader["address"])
@@ -364,6 +376,15 @@ class WhaleTracker:
                 buckets[key]["whale_volumes"].append(trader["volume"])
                 buckets[key]["whale_addresses"].append(trader["address"])
 
+                # First time we've seen THIS whale in THIS position — carried over
+                # from last cycle's state if we already had it, else it's new as of now.
+                pos_key = f"{asset}_{side}"
+                prev_first = prev_pos.get(trader["address"], {}).get(pos_key, {}).get("first_seen")
+                first_seen = prev_first or now
+                new_state_pos.setdefault(trader["address"], {})[pos_key] = {
+                    "title": title, "side": side, "first_seen": first_seen,
+                }
+
                 # amount_traded (cost basis) and to_win (net profit if this resolves in
                 # their favor: size * $1 payout - cost) — same fields the dashboard shows
                 # for the bot's own Open Positions, now surfaced per whale position too
@@ -374,6 +395,7 @@ class WhaleTracker:
                     "size": round(size, 2), "value": round(cur_val, 2),
                     "amount_traded": round(amount_traded, 2),
                     "to_win": round(size - amount_traded, 2),
+                    "first_seen": first_seen,
                 })
 
             if trader_positions:
@@ -386,12 +408,6 @@ class WhaleTracker:
                     "window_profit": trader.get("window_profit", {}),
                     "positions": sorted(trader_positions, key=lambda p: p["value"], reverse=True),
                 })
-
-        # Load previous state to detect new entries this cycle
-        now = _now_iso()
-        prev_state    = _load_whale_state()
-        prev_pos      = prev_state.get("whale_positions", {})
-        new_state_pos: dict = {}  # will replace prev_pos in the saved file
 
         signals = []
         for (asset, side), d in buckets.items():
@@ -408,23 +424,17 @@ class WhaleTracker:
             pos_key   = f"{asset}_{side}"
 
             # Freshness: count which whales are new to this position this cycle
+            # (new_state_pos is already fully populated from the position loop above —
+            # this just reads prev_pos, unchanged since before this cycle's scan, to see
+            # which of these whales weren't in it yet)
             new_whale_count = 0
             earliest_seen   = now
             for addr in d["whale_addresses"]:
                 prev_first = prev_pos.get(addr, {}).get(pos_key, {}).get("first_seen")
                 if prev_first is None:
                     new_whale_count += 1
-                else:
-                    if prev_first < earliest_seen:
-                        earliest_seen = prev_first
-                # Persist this whale's position with its original first_seen time
-                if addr not in new_state_pos:
-                    new_state_pos[addr] = {}
-                new_state_pos[addr][pos_key] = {
-                    "title":      d["title"],
-                    "side":       side,
-                    "first_seen": prev_first or now,
-                }
+                elif prev_first < earliest_seen:
+                    earliest_seen = prev_first
 
             signals.append({
                 "title":               d["title"],
