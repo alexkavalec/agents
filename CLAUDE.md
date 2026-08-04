@@ -554,6 +554,28 @@ confirm-before-apply step stays even for manual trades; the user already had an
   existing consensus-signal freshness/`is_fresh` behavior is unaffected; confirmed in a
   mocked-backend headless-Chromium test that the modal renders the new column with the right
   short date and full-timestamp tooltip.
+- [x] **Task #40** — Task #39's "Opened" column answered "when did the bot notice this," not what
+  the user actually asked next: looking at a trader's "Atlanta Braves vs. Chicago White Sox: O/U
+  8.5" position, there's no way to tell when that game is actually happening/live — real point
+  being made was "I need the market's own event/resolution date, not bot-observation freshness."
+  That data (`endDate` from Polymarket's `/positions`) was already being scraped and truncated to
+  `end_date` for the bucket-level consensus-signal rule-6 check in `whale_tracker.py`, but was
+  never attached to the individual per-trader position dicts the modal actually renders — a real
+  gap, not a hard problem. Added `end_date` to each entry in `get_whale_signals()`'s per-trader
+  `positions` list; `index.html`'s modal gained a separate "Event Date" column (distinct from
+  "Opened"). Needed its own formatter (`fmtEventDate()`) rather than reusing `fmtDateShort()` —
+  `end_date` is a bare `"YYYY-MM-DD"` calendar date with no time-of-day, and `fmtDateShort()`
+  appends `"Z"` (built for full ISO timestamps like `first_seen`), which on a date-only string
+  produces an invalid `Date`; the new formatter parses the fields directly and renders via
+  `Date.UTC(...)` + `timeZone: "UTC"` so the displayed calendar date can't shift a day depending
+  on the viewer's local timezone, and appends "(today)" when it matches the current UTC date — the
+  same "does this resolve today" question rule 6 already asks internally, now visible to a human
+  glancing at the modal. Verified with a scripted `get_whale_signals()` test confirming `end_date`
+  correctly reaches individual position dicts (e.g. a 2026-08-17 event correctly distinguished
+  from a 2026-08-04 one on the same trader), and a mocked-backend headless-Chromium test rendering
+  three positions (a future event, a far-future event, and a today event) confirming the "Event
+  Date" and "Opened" columns show different, correct values and the "(today)" tag appears only on
+  the one that's actually today.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---

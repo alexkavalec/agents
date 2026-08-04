@@ -396,6 +396,12 @@ class WhaleTracker:
                     "amount_traded": round(amount_traded, 2),
                     "to_win": round(size - amount_traded, 2),
                     "first_seen": first_seen,
+                    # The market's own resolution/event date (Polymarket's "endDate") —
+                    # already scraped for the consensus-signal rule-6 check but never
+                    # attached to individual positions until now. This is what answers
+                    # "when does this actually happen", not first_seen (which only says
+                    # when the bot noticed the position).
+                    "end_date": end_date[:10],
                 })
 
             if trader_positions:
