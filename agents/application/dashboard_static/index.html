@@ -313,7 +313,7 @@
     <div class="scroll">
       <table id="modal-positions-table">
         <thead>
-          <tr><th>Market</th><th>Side</th><th>Traded</th><th>To Win</th><th>Avg</th><th>Now</th><th>Value</th><th>Opened</th></tr>
+          <tr><th>Market</th><th>Side</th><th>Traded</th><th>To Win</th><th>Avg</th><th>Now</th><th>Value</th><th>Event Date</th><th>Opened</th></tr>
         </thead>
         <tbody id="modal-positions-body"></tbody>
       </table>
@@ -357,6 +357,20 @@ function fmtDateShort(iso) {
   try {
     return new Date(iso + (iso.endsWith("Z") ? "" : "Z")).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   } catch (e) { return iso; }
+}
+// Market end_date is a bare "YYYY-MM-DD" calendar date (no time-of-day), unlike the
+// full ISO timestamps fmtDateShort/fmtTime expect — appending "Z" to a date-only
+// string produces an invalid Date, so this parses the fields directly and formats
+// in UTC to avoid the displayed date shifting a day off depending on the viewer's
+// local timezone.
+function fmtEventDate(dateStr) {
+  if (!dateStr) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+  if (!m) return dateStr;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  const label = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  return dateStr.slice(0, 10) === todayUtc ? label + " (today)" : label;
 }
 function displayName(row) {
   const addr = row && row.address;
@@ -576,6 +590,7 @@ function openTraderModal(address) {
         <td>${fmtPrice(p.avg_price)}</td>
         <td>${fmtPrice(p.cur_price)}</td>
         <td class="${pnlClass(p.value, p.amount_traded)}">${fmtUsd(p.value)}</td>
+        <td>${escapeHtml(fmtEventDate(p.end_date))}</td>
         <td title="${escapeHtml(fmtTime(p.first_seen))}">${fmtDateShort(p.first_seen)}</td>
       </tr>
     `).join("");
