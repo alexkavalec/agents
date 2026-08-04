@@ -576,6 +576,33 @@ confirm-before-apply step stays even for manual trades; the user already had an
   three positions (a future event, a far-future event, and a today event) confirming the "Event
   Date" and "Opened" columns show different, correct values and the "(today)" tag appears only on
   the one that's actually today.
+- [x] **Task #41** — Two follow-ups on the trader modal, from direct user feedback: (1) drop the
+  "Opened" column added in Task #39 — user doesn't care when the bot first noticed a position;
+  (2) make Traded/To Win/Avg/Now/Value update roughly every minute instead of only as fresh as the
+  bot's last 15-minute scan. For (1), reverted `whale_tracker.py`'s per-position `first_seen`
+  tracking back to consensus-only (its pre-Task-#39 scope) — the extended per-position tracking
+  had no consumer left once the column was removed, so kept it, `new_state_pos`, and
+  `whale_positions_state.json` scoped to only what the `[NEW]`/consensus-signal-freshness logic
+  actually needs, same as before Task #39. Extracted the shared per-position field parsing +
+  MIN_POSITION_VALUE dust filter (previously inlined in `get_whale_signals()`'s loop) into a new
+  `_parse_position()` module function, since (2) needed the identical logic for a second, cheaper
+  code path: `WhaleTracker.get_live_positions(address)` — a single `/positions` call for one
+  trader, no leaderboard scrape, no consensus bucketing — plus a new `GET /api/trader-positions`
+  dashboard endpoint. `index.html`'s modal now polls that endpoint every 60s while open
+  (`startPositionsPolling()`/`refreshTraderPositions()`, cleared on close via
+  `stopPositionsPolling()`), re-rendering just the positions table and the Open Positions/Total
+  Value stat cards through an extracted `applyTraderPositions()` — leaderboard rank and
+  window-profit stat cards are untouched by the poll, since those are genuinely only as fresh as
+  the bot's own scan cycle, same as everywhere else on the dashboard. Also added `title` tooltips
+  to the Traded/To Win/Avg/Now column headers answering a live user question about what "Avg"
+  meant (average price per share the whale paid — their entry/cost-basis price — vs. "Now", the
+  current market price). Verified with a scripted `get_whale_signals()` test confirming
+  `first_seen` no longer appears on individual position dicts and the state file only tracks
+  consensus positions again; a scripted `get_live_positions()` call against mocked positions
+  confirming it returns the same shape/filtering as the full scan for a single address; and a
+  mocked-backend headless-Chromium test confirming the "Opened" column is gone, calling the
+  refresh function updates the Now/Value cells in place with new values from a second mocked
+  response, and the poll timer is cleared when the modal closes.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
