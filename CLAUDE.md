@@ -664,6 +664,46 @@ confirm-before-apply step stays even for manual trades; the user already had an
   evening-game payload (confirms unaffected); a Playwright test confirming `fmtEventDate()` now
   renders the identical, correct calendar date across four different viewer timezones
   (America/New_York, UTC, Asia/Tokyo, America/Los_Angeles) with zero day-shifting in any of them.
+- [x] **Task #44** — User reported the dashboard's top stat cards stuck at zero (Record 0W-0L-0P,
+  Win Rate 0%, P&L $0.00, ROI 0%, Trades Filled 0/0) while Balance and Open Positions (2) were
+  correct — the exact signature of Task #35's data-loss bug actually happening: Balance/Open
+  Positions are fetched live from Polymarket's own API every request, so they're unaffected by
+  local state loss, while Record/Win Rate/P&L/ROI/Trades Filled all come from `trade_history.json`
+  alone, which reads as literal zero (not just low) only if the file itself is empty/missing.
+  Audited all four state-file paths (`trade_log.TRADE_HISTORY_FILE`, `trade.STATE_FILE`,
+  `whale_tracker.WHALE_STATE_FILE`/`WHALE_CACHE_FILE`, `overrides.OVERRIDES_FILE`) — all still
+  correctly resolve via `DATA_DIR` as fixed in Task #35, so this isn't a code regression; it means
+  `DATA_DIR` genuinely isn't pointed at a mounted Railway Volume yet on this deployment, so the
+  last redeploy wiped local state while the wallet's real on-chain/API positions persisted
+  independently. Two things shipped: (1) the actual fix going forward is unavoidably manual —
+  Railway Volume + `DATA_DIR` still has to be set in the Railway dashboard, it can't be done from
+  code (see "Persistent state" in Environment/Railway Notes above for the exact steps) — flagged
+  directly to the user rather than silently assumed done; (2) a new one-time recovery utility,
+  `scripts/backfill_trade_history.py`, reconstructs `trade_history.json` entries from whatever
+  Polymarket's own `/positions` API can still show for the wallet — open positions recover
+  cleanly, and already-resolved losses usually do too (losing positions are worthless dust nobody
+  bothers to formally redeem, so they persist indefinitely as `redeemable: true`) — but already-
+  resolved WINS that were already claimed do **not** recover, since Polymarket drops a position
+  from the API entirely the moment its payout is redeemed (same bias documented in Task #33's
+  win/loss notes). Every backfilled entry is tagged `"backfilled": true` for provenance, matched
+  by `token_id` so re-running is safe (won't duplicate already-logged or already-backfilled
+  entries), and `bot_estimate`/`edge` are set to the entry price as an explicit placeholder since
+  the bot's real estimate at trade time is unrecoverable. **Found and fixed a real bug while
+  building this**: `scoreboard.py`'s `resolve_completed()` computed `cur_price` via
+  `pos.get("curPrice", pos.get("currentValue", -1)) or -1` — a resolved LOSS's `curPrice` is
+  legitimately `0`, which the trailing `or -1` treats as falsy and silently replaces with `-1`,
+  corrupting the recorded `exit_price` on every single resolved loss (didn't flip the win/loss
+  classification itself, since `-1` still happens to satisfy the same "loss" threshold check, but
+  the stored exit price was simply wrong). Fixed with an explicit `is None` check instead of `or`,
+  in both `scoreboard.py` and the new script (which needs the identical resolution logic).
+  Verified live against a real wallet (`0xa5ea13a81d2b7e8e424b182bdc1db08e756bd96a`, the existing
+  `inspect_whale.py` test address): `--dry-run` correctly previewed 500 recoverable positions
+  without writing; a real run wrote them and confirmed `exit_price: 0.0` (not `-1.0`) on a
+  resolved loss, fixing the bug; a second run against the now-populated file correctly skipped all
+  500 as already-known and reported nothing left to backfill; `get_stats()`/`get_scoreboard_stats()`
+  correctly read the backfilled data end-to-end (`500/500` filled, record matching the positions
+  fetched, consistent with this test wallet's known heavy loss bias from Task #33 — not a new bug,
+  just what that wallet's real data looks like).
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
