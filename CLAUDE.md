@@ -628,6 +628,42 @@ confirm-before-apply step stays even for manual trades; the user already had an
   exposure for evening US games — flagged to the user, not changed here, since it's trading-rule
   behavior and this project's established pattern (see "Future: Multi-Agent Architecture" section
   above) is to never touch trade-timing logic without an explicit decision.
+- [x] **Task #43** — Task #42's timezone fix wasn't the whole story: user reported a live/in-
+  progress Padres vs. Diamondbacks position showing "Aug 11" as its event date — a full **week**
+  off, far more than a 1-day UTC rollover could explain. Root-caused by curling Gamma's
+  `/public-search` directly for the real event: the game's own event slug is
+  `mlb-sd-ari-2026-08-03` (the actual game day, Aug 3), every sibling prop market on that same
+  event (spread, first-5-innings, etc.) correctly has `endDate: 2026-08-04T01:40:00Z` (the expected
+  1-day UTC rollover of Aug 3 US-evening), but the main moneyline market's own `endDate` —
+  the exact one this position was on — is `2026-08-11T01:40:00Z`: **a full week later than its own
+  slug and its siblings on the same event.** This is Polymarket's own data being wrong on that one
+  field for that one market type, not a timezone artifact at all — confirmed `endDate` genuinely
+  cannot be trusted as a reliable "when does this happen" signal even within a single event.
+  Fixed by preferring the date embedded in the position's `slug`/`eventSlug` (e.g.
+  `mlb-sd-ari-2026-08-03` → `2026-08-03`) over `endDate` whenever the slug has one — new
+  `_SLUG_DATE_RE` regex + logic added to `_parse_position()` (the single function both
+  `get_whale_signals()`'s full scan and `get_live_positions()`'s live refresh already share, so
+  every position everywhere benefits, no new duplication). Falls back to `endDate[:10]` only for
+  markets with no date in their slug (futures/long-running markets, e.g.
+  `will-the-detroit-pistons-win-the-2026-nba-finals`), which don't have the evening-game problem
+  anyway. Since `end_date` is now already resolved to the correct literal calendar day server-side
+  (not a UTC instant needing conversion), `index.html`'s `fmtEventDate()` had to change too — Task
+  #42's UTC-midnight-then-local-timezone-render trick would now incorrectly *shift* these
+  already-correct slug-derived dates a day off depending on the viewer's timezone (the exact bug
+  it was built to avoid, just applied to already-good data). Switched to constructing the date in
+  the browser's **local** time directly (no `Date.UTC`/`"Z"`) so it displays as that literal date
+  for every viewer regardless of timezone. **Side effect worth flagging**: since `_parse_position()`
+  feeds both the display AND the bucket `end_date` that rule 6's `is_today_event` reads, this is
+  also a genuine accuracy improvement for the bot's own "today's events only" trading rule, not
+  just cosmetic — the same bad-endDate markets would have been misjudged by rule 6 too. This is a
+  correctness fix to bad input data feeding an existing, unchanged rule, not a new trading-logic
+  decision, but flagged here for visibility per this project's normal caution around anything
+  touching rule 6. Verified with a scripted `_parse_position()` test against the exact anomalous
+  MLB payload (confirms `2026-08-03` from the slug, not `2026-08-11` from endDate), a futures-market
+  payload with no slug date (confirms correct fallback to endDate), and the Task #42 NBA
+  evening-game payload (confirms unaffected); a Playwright test confirming `fmtEventDate()` now
+  renders the identical, correct calendar date across four different viewer timezones
+  (America/New_York, UTC, Asia/Tokyo, America/Los_Angeles) with zero day-shifting in any of them.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
