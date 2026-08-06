@@ -746,6 +746,27 @@ confirm-before-apply step stays even for manual trades; the user already had an
   ~1wk bug → slug), Task #45 (undecided, 77-day genuine reschedule → endDate), this CPBL case
   (undecided, ~1wk bug → slug, the one the old logic got wrong), Task #42 (normal 1-day evening
   rollover → slug), and a futures market with no slug date (clean fallback, unaffected).
+- [x] **Task #47** — User reported the chat assistant's replies were hard to read — long,
+  dense-looking messages with visible `**` and `-` characters running together in one paragraph.
+  Root cause: `appendChatMessage()` set the message bubble's content via `textContent`, which (a)
+  renders `**bold**`/`- bullet` markdown syntax literally instead of formatting it, and (b) HTML's
+  default whitespace collapsing folds every newline into a single space, so even a well-structured
+  multi-bullet reply displays as one run-on wall of text. Added `formatChatText()` — everything is
+  HTML-escaped first, then a handful of known-safe patterns are turned into real markup: `**bold**`
+  → `<strong>`, blank-line-separated blocks → `<p>`, a block where every line starts with `- `/`• `
+  → a real `<ul><li>` list, single newlines within a paragraph → `<br>`. Deliberately not a full
+  markdown library (self-contained page, and the assistant only ever produces these two patterns)
+  — never inserts raw model output as HTML, only pre-escaped text run through fixed regex
+  substitutions. Only applied to assistant messages; user-typed messages still render as plain
+  `textContent` (no markdown to render, keeps their input trivially safe). Added a short
+  formatting note to `chat.py`'s system prompt asking for blank lines around bullet lists (needed
+  for `formatChatText()`'s block-splitting to recognize a list) and to reserve formatting for
+  genuinely dense info rather than decorating every reply. Verified with a scripted
+  `formatChatText()` test matching the reported message's exact shape (intro sentence, 3 bulleted
+  positions with bold labels, closing sentence) confirming it produces one `<ul>` with 3 `<li>`s
+  and the right `<strong>` tags instead of a single run-on paragraph; a mocked-backend
+  headless-Chromium screenshot confirming the rendered bubble shows a real bulleted list with bold
+  labels and proper paragraph spacing.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---

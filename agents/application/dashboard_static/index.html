@@ -169,11 +169,21 @@
     padding: 2px 2px 14px;
   }
   .chat-msg { max-width: 82%; padding: 9px 13px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; }
-  .chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
   .chat-msg.assistant {
     align-self: flex-start; background: rgba(255,255,255,0.05); border: 1px solid var(--border);
     border-bottom-left-radius: 4px;
   }
+  /* The assistant's replies are lightly formatted (see formatChatText()) — bold and
+     bullet lists render as real markup instead of literal "**"/"-" in a run-on wall
+     of text, which is what plain textContent collapsed everything into before. */
+  .chat-msg.assistant p { margin: 0 0 8px; }
+  .chat-msg.assistant p:last-child { margin-bottom: 0; }
+  .chat-msg.assistant ul { margin: 2px 0 8px 18px; padding: 0; }
+  .chat-msg.assistant ul:last-child { margin-bottom: 0; }
+  .chat-msg.assistant li { margin-bottom: 4px; }
+  .chat-msg.assistant li:last-child { margin-bottom: 0; }
+  .chat-msg.assistant strong { font-weight: 700; color: var(--text); }
   .chat-proposal {
     align-self: flex-start; max-width: 82%; background: rgba(124,140,255,0.08);
     border: 1px solid var(--accent); border-radius: 12px; padding: 12px 14px; font-size: 13px;
@@ -407,6 +417,24 @@ function pnlClass(current, cost) {
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+// Minimal, safe markdown-ish rendering for the assistant's chat replies — everything
+// is HTML-escaped first, so this only ever turns already-escaped text into a handful
+// of known-safe tags (<strong>/<p>/<ul>/<li>/<br>), never raw model output as HTML.
+// Handles the two things the assistant actually uses: **bold** and "- " bullet lists,
+// plus paragraph/line breaks — without a full markdown library.
+function formatChatText(text) {
+  const escaped = escapeHtml(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  const blocks = escaped.split(/\n\s*\n/);
+  const html = blocks.map(block => {
+    const lines = block.split("\n").filter(l => l.trim() !== "");
+    if (!lines.length) return "";
+    if (lines.every(l => /^\s*[-•]\s+/.test(l))) {
+      return "<ul>" + lines.map(l => "<li>" + l.replace(/^\s*[-•]\s+/, "") + "</li>").join("") + "</ul>";
+    }
+    return "<p>" + lines.join("<br>") + "</p>";
+  }).join("");
+  return html || escaped;
 }
 const STATUS_LABELS = { filled: "Filled", fok_killed: "FOK killed", untradeable: "Untradeable", error: "Error" };
 const OUTCOME_LABELS = { win: "Win", loss: "Loss", push: "Push", pending: "Pending", "n/a": "—" };
@@ -801,10 +829,14 @@ function appendChatMessage(role, text) {
   const log = document.getElementById("chat-log");
   const div = document.createElement("div");
   div.className = "chat-msg " + role;
-  div.textContent = text;
+  if (role === "assistant") {
+    div.innerHTML = formatChatText(text);
+  } else {
+    div.textContent = text; // plain user input, no markdown to render
+  }
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
-  chatHistory.push({ role, content: text });
+  chatHistory.push({ role, content: text }); // raw text, not the rendered HTML
   if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
 }
 

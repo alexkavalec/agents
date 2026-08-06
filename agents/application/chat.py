@@ -64,7 +64,13 @@ do anything beyond those two tools — if someone asks for that, just say so hon
 casually, don't fake it or call a tool anyway. Otherwise, just talk normally: answer questions \
 about their balance, positions, the whale leaderboard, or what the bot's doing using the state \
 snapshot below, explain how any of this works, or just have a normal conversation. You're \
-allowed to have a personality."""
+allowed to have a personality.
+
+Formatting: the chat box renders **bold** and "- " bullet lists as real formatting, so use them \
+for anything with more than two or three data points (prices, position lists, comparisons) — a \
+blank line before and after a bullet list so it renders as one, not folded into a sentence. \
+Skip formatting entirely for a short conversational reply; it's for making dense info scannable, \
+not for decorating every message."""
 
 TOOLS = [
     {
