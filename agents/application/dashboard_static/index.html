@@ -824,6 +824,11 @@ function renderOverridesBanner(ov) {
 }
 
 let chatHistory = [];
+// Set only when the assistant's last reply was an ambiguous manual-trade match —
+// resent with the next message so a follow-up answer can resolve directly against
+// these exact candidates instead of a fresh search (see chat.py's handle_message()
+// docstring for why that matters, not just for convenience).
+let pendingManualTradeCandidates = null;
 
 function appendChatMessage(role, text) {
   const log = document.getElementById("chat-log");
@@ -913,12 +918,19 @@ document.getElementById("chat-form").addEventListener("submit", e => {
   fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, history: chatHistory.slice(0, -1) }),
+    body: JSON.stringify({
+      message, history: chatHistory.slice(0, -1),
+      pending_candidates: pendingManualTradeCandidates,
+    }),
   })
     .then(r => r.json())
     .then(result => {
       appendChatMessage("assistant", result.reply || "(no reply)");
       if (result.proposal) appendProposalCard(result.proposal);
+      // Always sync to the server's latest answer — it's only non-null right after
+      // an ambiguous manual-trade match, so this naturally clears once resolved or
+      // once the conversation moves on to something else.
+      pendingManualTradeCandidates = result.pending_candidates || null;
     })
     .catch(() => appendChatMessage("assistant", "Sorry, something went wrong sending that."))
     .finally(() => {

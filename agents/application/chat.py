@@ -165,46 +165,71 @@ def _resolve_trader(query: str, known_traders: list):
     return {"address": t["address"], "name": t.get("name") or t["address"][:10] + "..."}, None
 
 
-def _resolve_manual_trade(call: dict):
+def _resolve_manual_trade(call: dict, pending_candidates: list = None):
     """Search for the described market and resolve it to a single confident
-    match. Returns (proposal_dict_or_None, error_message_or_None) — the error
-    message doubles as the clarifying question shown back to the user when the
-    match is ambiguous or not found, so the caller never has to guess."""
+    match. Returns (proposal_dict_or_None, error_message_or_None,
+    pending_candidates_or_None) — the error message doubles as the clarifying
+    question shown back to the user when the match is ambiguous or not found,
+    and pending_candidates (only set on the ambiguous-multi-match path) is
+    handed back to the caller to resend on the next turn — see below for why
+    that matters, not just convenience.
+
+    pending_candidates, if given, is the exact candidate list a previous
+    ambiguous match already returned. If the query names one of THOSE
+    candidates exactly, resolve directly against it instead of running a new
+    Gamma search. This isn't just an optimization: some market types put the
+    bet-type phrase first in their own title (e.g. "Spread: Baltimore Orioles
+    (-1.5)"), which is exactly the query shape confirmed to rank badly in
+    Gamma's search (see market_search.py's docs) — so a user quoting that
+    title straight back, verbatim, as instructed, can otherwise search for
+    it and find NOTHING, even though we showed them that exact title a
+    message ago. Matching against the already-known candidate list sidesteps
+    Gamma's search entirely for this case."""
     query = (call.get("market_query") or "").strip()
     side_query = (call.get("side") or "").strip().lower()
     if not query:
-        return None, "I need to know which market you mean."
+        return None, "I need to know which market you mean.", None
     if not side_query:
-        return None, "Which side/outcome do you want?"
+        return None, "Which side/outcome do you want?", None
     try:
         amount = float(call.get("amount_usd"))
     except (TypeError, ValueError):
-        return None, "Couldn't parse the dollar amount."
+        return None, "Couldn't parse the dollar amount.", None
     if amount <= 0:
-        return None, "The amount has to be a positive dollar figure."
+        return None, "The amount has to be a positive dollar figure.", None
 
-    results = search_markets(query)  # generous default cap — see search_markets()'s docstring
-    candidates = [m for m in results if is_relevant(m["question"], query)]
-
-    # If the query is an exact (case-insensitive) match for one specific candidate's
-    # full question text — e.g. the user quoted a title straight back from a
-    # disambiguation list we just showed them — treat that as decisive even if
-    # looser-matching siblings (prop markets on the same event: O/U, first-5-innings,
-    # etc.) also passed the relevance filter above. Without this, a base market whose
-    # own title is a strict substring of every sibling's title can never be picked on
-    # its own — the word-overlap check in is_relevant() lets every sibling through too
-    # since they all contain the same team names — so the same "which did you mean?"
-    # list keeps coming back even after the user answers it correctly.
-    if len(candidates) > 1:
-        exact = [m for m in candidates if m["question"].strip().lower() == query.strip().lower()]
+    candidates = None
+    if pending_candidates:
+        exact = [
+            c for c in pending_candidates
+            if isinstance(c, dict) and str(c.get("question", "")).strip().lower() == query.strip().lower()
+        ]
         if len(exact) == 1:
             candidates = exact
 
+    if candidates is None:
+        results = search_markets(query)  # generous default cap — see search_markets()'s docstring
+        candidates = [m for m in results if is_relevant(m["question"], query)]
+
+        # If the query is an exact (case-insensitive) match for one specific candidate's
+        # full question text — e.g. the user quoted a title straight back from a
+        # disambiguation list we just showed them — treat that as decisive even if
+        # looser-matching siblings (prop markets on the same event: O/U, first-5-innings,
+        # etc.) also passed the relevance filter above. Without this, a base market whose
+        # own title is a strict substring of every sibling's title can never be picked on
+        # its own — the word-overlap check in is_relevant() lets every sibling through too
+        # since they all contain the same team names — so the same "which did you mean?"
+        # list keeps coming back even after the user answers it correctly.
+        if len(candidates) > 1:
+            exact = [m for m in candidates if m["question"].strip().lower() == query.strip().lower()]
+            if len(exact) == 1:
+                candidates = exact
+
     if not candidates:
-        return None, f'Couldn\'t find an open market that clearly matches "{query}" — try naming it more specifically.'
+        return None, f'Couldn\'t find an open market that clearly matches "{query}" — try naming it more specifically.', None
     if len(candidates) > 1:
         listing = "; ".join(f'"{m["question"]}"' for m in candidates[:5])
-        return None, f'Found more than one open market matching that — which did you mean? {listing}'
+        return None, f'Found more than one open market matching that — which did you mean? {listing}', candidates[:5]
 
     market = candidates[0]
     outcome_idx = None
@@ -214,7 +239,7 @@ def _resolve_manual_trade(call: dict):
             break
     if outcome_idx is None:
         options = ", ".join(market["outcomes"])
-        return None, f'"{market["question"]}" has outcomes {options} — which one did you mean by "{call.get("side", "")}"?'
+        return None, f'"{market["question"]}" has outcomes {options} — which one did you mean by "{call.get("side", "")}"?', None
 
     proposal = {
         "id": str(uuid.uuid4()),
@@ -229,7 +254,7 @@ def _resolve_manual_trade(call: dict):
         "summary": (call.get("summary") or "").strip()
         or f'Buy ${amount:.2f} of "{market["outcomes"][outcome_idx]}" on "{market["question"]}".',
     }
-    return proposal, None
+    return proposal, None, None
 
 
 def _format_context(context: dict) -> str:
@@ -330,12 +355,20 @@ def _format_context(context: dict) -> str:
     return "\n".join(lines)
 
 
-def handle_message(message: str, known_traders: list, context: dict = None, history: list = None) -> dict:
+def handle_message(
+    message: str, known_traders: list, context: dict = None, history: list = None,
+    pending_candidates: list = None,
+) -> dict:
     """
-    Returns {"reply": str, "proposal": dict | None}. A non-None proposal is
-    ready to send to /api/overrides/confirm (has "focus_trader"/"trade_count_cap"/
-    "size_override_usd") or /api/manual-trade/confirm (has "manual_trade") as-is
-    if the user approves it — nothing is written to disk or executed here.
+    Returns {"reply": str, "proposal": dict | None, "pending_candidates": list | None}.
+    A non-None proposal is ready to send to /api/overrides/confirm (has
+    "focus_trader"/"trade_count_cap"/"size_override_usd") or /api/manual-trade/confirm
+    (has "manual_trade") as-is if the user approves it — nothing is written to disk or
+    executed here. pending_candidates is set only when a manual-trade search was
+    ambiguous — the caller should hold onto it and resend it as the pending_candidates
+    argument on the NEXT call, so a follow-up reply naming one of those candidates can
+    resolve directly against them instead of a fresh (and, for some market types,
+    unreliable — see _resolve_manual_trade's docstring) search.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
@@ -372,10 +405,10 @@ def handle_message(message: str, known_traders: list, context: dict = None, hist
     call = call_block.input
 
     if call_block.name == "propose_manual_trade":
-        proposal, err = _resolve_manual_trade(call)
+        proposal, err, ambiguous_candidates = _resolve_manual_trade(call, pending_candidates)
         if err:
-            return {"reply": err, "proposal": None}
-        return {"reply": " ".join(text_parts).strip() or proposal["summary"], "proposal": proposal}
+            return {"reply": err, "proposal": None, "pending_candidates": ambiguous_candidates}
+        return {"reply": " ".join(text_parts).strip() or proposal["summary"], "proposal": proposal, "pending_candidates": None}
 
     # propose_override
     proposal = {"id": str(uuid.uuid4())}

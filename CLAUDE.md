@@ -827,6 +827,30 @@ confirm-before-apply step stays even for manual trades; the user already had an
   the two previously-documented safety cases (`"bitcoin above 100k"`, bare `"lakers"`) still
   correctly return zero candidates; regression-tested Task #48's exact-title-match fix still works
   unchanged under the new threshold.
+- [x] **Task #50** — Task #49 fixed the *first* search, but the disambiguation follow-up itself
+  still broke: after the assistant listed "Spread: Baltimore Orioles (-1.5)" as a candidate and the
+  user quoted it back exactly (as `chat.py`'s prompt instructs), the reply was still "couldn't find
+  an open market." Root cause: echoing an exact market title back as the NEXT search query
+  re-triggers the exact Task #49 ranking bug, since spread-market titles themselves lead with the
+  bet-type phrase ("Spread: …") — the very shape confirmed to rank badly. The "echo the exact title
+  back" strategy was self-defeating for any market type whose own title has this shape. Fixed
+  properly instead of patching around it again: `_resolve_manual_trade()` now accepts a
+  `pending_candidates` list — the exact candidates from the previous ambiguous match — and if the
+  new query names one of THOSE exactly, resolves directly against it with **no new Gamma search at
+  all**, sidestepping the ranking problem entirely rather than hoping around it. `chat.
+  handle_message()` returns `pending_candidates` (only set on the ambiguous-match path) for the
+  caller to hold and resend; `dashboard.py`'s `/api/chat` round-trips it exactly like `history`;
+  `index.html` tracks it in a new `pendingManualTradeCandidates` variable, sent with every request
+  and always re-synced to whatever the server's latest response says (so it naturally clears once
+  resolved, or once the conversation moves on to something unrelated — the assistant simply won't
+  call `propose_manual_trade` with a query matching stale candidates from an abandoned topic).
+  Verified with a scripted `_resolve_manual_trade()` test: turn 1 mocks a real 3-candidate ambiguous
+  match; turn 2 echoes one title back exactly while mocking `search_markets()` to return nothing at
+  all (simulating the confirmed-live Gamma failure) — resolves correctly to the right proposal
+  while never calling `search_markets()` again, proving the fix doesn't depend on the search
+  succeeding. A mocked-backend headless-Chromium test confirmed the full round trip: pending
+  candidates get stored after an ambiguous reply, sent back on the next request, a proposal card
+  renders correctly, and the client-side state clears once resolved.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
