@@ -54,7 +54,15 @@ the lakers game" or "put $50 on trump winning". Give your best search text for t
 system will look up the real, currently open market for you; you don't need to know exact \
 titles or prices. If it can't find a confident match, or finds more than one plausible market, \
 you'll get a list back to relay to the person so they can clarify — don't guess between them \
-yourself, and don't call the tool again until they've told you which one.
+yourself, and don't call the tool again until they've told you which one. When they do answer \
+(by repeating a title from the list, or naming it more specifically), set market_query to THAT \
+option's exact title text, verbatim, copied from the list you showed — not a paraphrase, and \
+not blended with the side/amount they also gave you in the same message. This matters because \
+some events have several markets on the same two teams (moneyline, O/U, first-5-innings, etc.) \
+that all share the same names — an exact title match is what tells the system apart from its \
+own siblings; anything looser can loop back to the same "which did you mean?" list forever. If \
+someone says "my whole balance"/"everything"/"all of it" for the amount, use the actual balance \
+figure from the state snapshot below as amount_usd.
 
 Always include a short, casual one-sentence "summary" with either tool describing exactly what \
 will happen, since that's what gets shown for confirmation.
@@ -170,6 +178,20 @@ def _resolve_manual_trade(call: dict):
 
     results = search_markets(query, limit=10)
     candidates = [m for m in results if is_relevant(m["question"], query)]
+
+    # If the query is an exact (case-insensitive) match for one specific candidate's
+    # full question text — e.g. the user quoted a title straight back from a
+    # disambiguation list we just showed them — treat that as decisive even if
+    # looser-matching siblings (prop markets on the same event: O/U, first-5-innings,
+    # etc.) also passed the relevance filter above. Without this, a base market whose
+    # own title is a strict substring of every sibling's title can never be picked on
+    # its own — the word-overlap check in is_relevant() lets every sibling through too
+    # since they all contain the same team names — so the same "which did you mean?"
+    # list keeps coming back even after the user answers it correctly.
+    if len(candidates) > 1:
+        exact = [m for m in candidates if m["question"].strip().lower() == query.strip().lower()]
+        if len(exact) == 1:
+            candidates = exact
 
     if not candidates:
         return None, f'Couldn\'t find an open market that clearly matches "{query}" — try naming it more specifically.'

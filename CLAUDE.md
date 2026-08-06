@@ -767,6 +767,30 @@ confirm-before-apply step stays even for manual trades; the user already had an
   and the right `<strong>` tags instead of a single run-on paragraph; a mocked-backend
   headless-Chromium screenshot confirming the rendered bubble shows a real bulleted list with bold
   labels and proper paragraph spacing.
+- [x] **Task #48** — User got stuck in an infinite disambiguation loop trying to place a manual
+  trade on "San Diego Padres vs. Arizona Diamondbacks" — every reply (including one where they
+  quoted a candidate title almost verbatim back) returned the exact same "which did you mean?"
+  list. Root cause confirmed with a scripted repro of the real candidate set: that MLB event has
+  several sibling markets on the same two teams (the plain moneyline, an NRFI prop, O/U 9.5, two
+  first-5-innings O/U variants) whose titles are all supersets of the base moneyline's title —
+  `market_search.is_relevant()`'s word-overlap check has no numbers to key off when the query
+  doesn't name a specific line (e.g. no "9.5"), so every sibling's question contains all the same
+  team-name words and passes the check too. A base market whose own title is a strict substring of
+  every one of its own siblings' titles could never be isolated this way, no matter how the user
+  phrased their answer. Fixed in `chat._resolve_manual_trade()`: when more than one candidate
+  still passes the relevance filter, check for an exact (case-insensitive) match between the query
+  and one specific candidate's full question text — e.g. the user quoting a title straight back
+  from the disambiguation list we just showed them — and collapse to that single candidate instead
+  of re-asking. Also strengthened `chat.py`'s system prompt: when the user answers a disambiguation
+  question, set `market_query` to that option's exact quoted title, verbatim, not blended with the
+  side/amount also in their reply (which is what was very likely happening — a merged/paraphrased
+  query never exactly matches any one candidate) — and added a note that "my whole balance"/
+  "everything" should resolve to the real balance figure already in the context snapshot rather
+  than fail to parse. Verified with a scripted `_resolve_manual_trade()` test using the exact
+  5-candidate set from the real event: an exact-title query now resolves cleanly to the base
+  moneyline market; a genuinely ambiguous query (no exact match to any candidate) still correctly
+  returns the clarifying question instead of silently guessing — confirming the fix doesn't weaken
+  the original disambiguation safety net, just closes the loop when the user has already answered.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
