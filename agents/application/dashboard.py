@@ -229,6 +229,11 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/chat":
             message = str(data.get("message", ""))[:2000]
             history = data.get("history") if isinstance(data.get("history"), list) else []
+            # Round-tripped from this same endpoint's previous response (see
+            # chat.handle_message()'s docstring) — only used to resolve a follow-up
+            # answer to a manual-trade disambiguation question without a fresh search,
+            # and still goes through the same human-confirm step as any other proposal.
+            pending_candidates = data.get("pending_candidates") if isinstance(data.get("pending_candidates"), list) else None
             try:
                 # Reuse _build_stats() so the assistant sees exactly what the dashboard
                 # itself shows — full leaderboards, every scanned whale's positions,
@@ -247,7 +252,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "whale_signals": whale_cache.get("signals", []),
                     "recent_trades": stats["recent_trades"][:15],
                 }
-                result = chat.handle_message(message, whale_cache.get("traders", []), context, history)
+                result = chat.handle_message(message, whale_cache.get("traders", []), context, history, pending_candidates)
                 self._send(200, "application/json", json.dumps(result).encode())
             except Exception as e:
                 self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
