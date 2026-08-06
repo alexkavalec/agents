@@ -791,6 +791,42 @@ confirm-before-apply step stays even for manual trades; the user already had an
   moneyline market; a genuinely ambiguous query (no exact match to any candidate) still correctly
   returns the clarifying question instead of silently guessing — confirming the fix doesn't weaken
   the original disambiguation safety net, just closes the loop when the user has already answered.
+- [x] **Task #49** — User couldn't place a manual trade on an MLB spread market ("orioles -1.5
+  spread, aug 6") — every attempt returned "couldn't find an open market," even after naming the
+  exact date and teams. Root-caused with three distinct, stacked bugs, all found by testing live
+  against Gamma:
+  1. **Query phrasing**: the model was constructing `market_query` to mimic Polymarket's own
+     market-title syntax (`"Spread: Baltimore Orioles (-1.5)"`) instead of natural language.
+     Confirmed live that Gamma's search ranks badly when a query LEADS with a generic bet-type
+     phrase or bare number instead of the participant names — that exact query surfaced a page of
+     unrelated soccer matches (`"Spread: AZ (-1.5)"`, `"Spread: NEC (-1.5)"`, etc.) that happen to
+     share the same structural pattern, not the real Orioles/Angels market at all; reordering to
+     `"Baltimore Orioles Los Angeles Angels spread -1.5"` (team names first) found it immediately.
+     `is_relevant()` correctly rejected the wrong soccer matches (zero team-name overlap), which is
+     why this surfaced as "couldn't find a market" rather than a wrong-market mismatch — but the
+     right fix is a better query, not filtering harder after the fact. Added an explicit instruction
+     to `chat.py`'s system prompt: always lead `market_query` with who's playing.
+  2. **A real, separate `search_markets()` bug**: even with the corrected query, the actual game's
+     event ranked 4th behind three large season-long prop events (each 16-30 markets — win totals,
+     postseason odds, futures), and the function's flat `limit=10` across ALL events combined
+     exhausted the whole budget on the first event's markets alone, never reaching the real one.
+     Added a `per_event_limit` (default 10) so results are sampled across many events instead of
+     one dominant one, and raised the overall `limit` default from 6 (10 at this call site) to 40 —
+     free to be generous since none of this triggers extra network calls, it's already all in the
+     one search response Gamma returns; capping only changes what's kept from it.
+  3. **A real, separate `is_relevant()` bug**, only exposed once (1) and (2) let the right candidate
+     through: a query naming BOTH teams (the phrasing that actually ranks well per fix #1) can't
+     satisfy the old "all but one word" threshold against a market that — by Polymarket's own
+     naming convention — only ever names ONE team for a per-side line (`"Spread: Baltimore Orioles
+     (-1.5)"` never mentions the Angels at all). Loosened the long-query threshold from "all but
+     one" to a plain majority; the number-match requirement (independently required whenever the
+     query names a number, e.g. the "-1.5" line) still carries most of this filter's real precision.
+  Verified live end-to-end: the corrected query now returns exactly the right small candidate set
+  (the full-game spread and both first-5-innings spread variants — correctly still asks which one,
+  since "aug 6" doesn't disambiguate full-game vs. first-5-innings on its own); regression-tested
+  the two previously-documented safety cases (`"bitcoin above 100k"`, bare `"lakers"`) still
+  correctly return zero candidates; regression-tested Task #48's exact-title-match fix still works
+  unchanged under the new threshold.
 - [ ] **Task #6** — Multi-agent architecture — SUPERSEDED, see note above. Do not build without an explicit new decision to reintroduce AI.
 
 ---
@@ -870,6 +906,20 @@ NBA championship" bundle many team-specific ones). No API key required.
   the verbatim matched question before they confirm).
 - The plain `/markets?search=...` endpoint (used elsewhere in Gamma's API) does **not** actually
   filter by the `search` param — it's silently ignored. `/public-search` is the real search path.
+- **Query word ORDER measurably affects ranking quality (Task #49)** — confirmed live: querying
+  `"Spread: Baltimore Orioles (-1.5)"` (mimicking Polymarket's own market-title syntax, bet-type
+  phrase first) returned a page of same-shaped `"Spread: X (-1.5)"` markets from entirely
+  unrelated soccer games, not the real Orioles game at all. Reordering to lead with the actual
+  participant names — `"Baltimore Orioles Los Angeles Angels spread -1.5"` — found the right
+  market immediately, no punctuation changes needed. `chat.py`'s system prompt now explicitly
+  tells the model to always lead `market_query` with who's playing.
+- **A large event can starve out a smaller, more relevant one (Task #49)** — the events array
+  isn't ranked purely by relevance to a single target; season-long prop events (e.g. "MLB: 2026
+  Regular Season Win Totals," one market per every team, 30 markets) can rank ahead of the actual
+  single-game event a query is really about. `search_markets()`'s old flat `limit` (applied across
+  all events combined) exhausted its whole budget on that one dominant event's markets before ever
+  reaching the real target further down the results — fixed with a `per_event_limit` so results
+  get sampled across many events, not just the top-ranked one.
 
 ### Inspect script
 `scripts/inspect_whale.py` — one-shot profiler for any Polymarket address:

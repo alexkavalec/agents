@@ -52,7 +52,14 @@ trade_count_cap 1 + size_override_usd 20 together).
 the lakers game" or "put $50 on trump winning". Give your best search text for the market \
 (market_query) plus which side they want (side) and the dollar amount (amount_usd) — the \
 system will look up the real, currently open market for you; you don't need to know exact \
-titles or prices. If it can't find a confident match, or finds more than one plausible market, \
+titles or prices. For an initial search, ALWAYS lead market_query with the team/participant \
+names, with any bet type or line number (spread, O/U, a specific number) after — never lead \
+with the bet type or a bare number (e.g. "Baltimore Orioles Los Angeles Angels spread -1.5", \
+not "Spread: Baltimore Orioles (-1.5)" or "-1.5 spread"). The search ranks badly and can surface \
+a same-shaped market from a completely different game when a query leads with something other \
+than who's actually playing — this isn't cosmetic, it's the difference between finding the real \
+market and finding nothing (or, without the relevance filter behind this, the wrong one). If it \
+can't find a confident match, or finds more than one plausible market, \
 you'll get a list back to relay to the person so they can clarify — don't guess between them \
 yourself, and don't call the tool again until they've told you which one. When they do answer \
 (by repeating a title from the list, or naming it more specifically), set market_query to THAT \
@@ -176,7 +183,7 @@ def _resolve_manual_trade(call: dict):
     if amount <= 0:
         return None, "The amount has to be a positive dollar figure."
 
-    results = search_markets(query, limit=10)
+    results = search_markets(query)  # generous default cap — see search_markets()'s docstring
     candidates = [m for m in results if is_relevant(m["question"], query)]
 
     # If the query is an exact (case-insensitive) match for one specific candidate's
